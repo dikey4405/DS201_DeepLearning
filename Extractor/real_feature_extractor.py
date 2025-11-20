@@ -13,7 +13,6 @@ class FeatureExtractor:
     """
     Sử dụng ResNet-50 (ImageNet) để trích xuất đặc trưng 2048D thô.
     Chúng ta giả lập 36 vùng bằng cách lấy các vị trí không gian từ feature map cuối.
-    Phù hợp cho dữ liệu COCO và yêu cầu caption không quá chi tiết.
     """
 
     def __init__(self, d_model=D_MODEL, d_region=D_REGION):
@@ -22,6 +21,8 @@ class FeatureExtractor:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
 
         resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+
+        # Loại bỏ lớp fully connected và avgpool cuối cùng
         self.feature_extractor = torch.nn.Sequential(*list(resnet.children())[:-2]).to(self.device)
         self.feature_extractor.eval()
 
