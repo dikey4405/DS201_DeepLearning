@@ -20,10 +20,10 @@ class CIDErReward:
             words = []
             for idx in seq:
                 idx = idx.item()
-                if idx == self.vocab.EOS_token:
+                if idx == self.vocabulary.EOS_idx:
                     break
-                if idx not in [self.vocab.SOS_token, self.vocab.PAD_token]:
-                    words.append(self.vocab.idx_to_word.get(idx, "<UNK>"))
+                if idx not in [self.vocabulary.SOS_idx, self.vocabulary.PAD_idx]:
+                    words.append(self.vocabulary.idx2word.get(idx, "<UNK>"))
             decoded.append(" ".join(words))
         return decoded
 
