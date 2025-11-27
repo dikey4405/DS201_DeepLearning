@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import json
 from tqdm import tqdm
-from real_feature_extractor import TorchvisionFeatureExtractor
+from real_feature_extractor import FeatureExtractor
 
 DATASET_ROOT = '/kaggle/input/data-dl'
 
