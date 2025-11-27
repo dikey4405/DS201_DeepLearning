@@ -6,17 +6,21 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from model.model_vi import GET
 from DataLoader.COCO_dataset import COCODataset, Vocabulary, collate_fn
-from DataLoader.Cider_reward import CIDErReward # Import lớp SCST
+from DataLoader.Cider_reward import CIDErReward 
 import json
 import os
 
 # --- THÔNG SỐ CONFIG ---
-IMAGE_DIR = './data/coco_images/'
-FEATURE_DIR = './data/coco_features_2048d/'
-CAPTION_TRAIN_JSON = './data/train_captions.json'
-CAPTION_VAL_JSON = './data/val_captions.json'
-BEST_XE_MODEL_PATH = 'get_model_best_xe.pth'
-BEST_SCST_MODEL_PATH = 'get_model_best_scst.pth'
+ROOT_IMAGE_DIR = '/kaggle/input/data-dl/Images/Images' 
+
+TRAIN_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'train') 
+VAL_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'dev')
+
+FEATURE_DIR = '/kaggle/working/coco_features_2048d/'
+CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json'
+CAPTION_VAL_JSON = '/kaggle/input/data-dl/Captions/dev.json'
+BEST_XE_MODEL_PATH = '/kaggle/working/get_model_best_xe.pth'
+BEST_SCST_MODEL_PATH = '/kaggle/working/get_model_best_scst.pth'
 
 # --- HÀM TRAIN_XE ---
 def train_xe(model, data_loader, optimizer, criterion, device):
@@ -91,7 +95,7 @@ def main():
     num_decoder_layers = 3 
     controller_type = 'MAC'
     BATCH_SIZE = 32
-    XE_EPOCHS = 15
+    XE_EPOCHS = 50
     SCST_EPOCHS = 10
     BEAM_SIZE_SCST = 5
     
@@ -109,9 +113,13 @@ def main():
         print(f"Lỗi khi xây dựng vocab: {e}")
         return
     
-    train_dataset = COCODataset(IMAGE_DIR, FEATURE_DIR, CAPTION_TRAIN_JSON, vocab)
+    # --- SỬA ĐỔI Ở ĐÂY: Truyền đúng folder ảnh cho từng tập ---
+    print(f"Loading Train data from: {TRAIN_IMAGE_DIR}")
+    train_dataset = COCODataset(TRAIN_IMAGE_DIR, FEATURE_DIR, CAPTION_TRAIN_JSON, vocab)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=4)
-    val_dataset = COCODataset(IMAGE_DIR, FEATURE_DIR, CAPTION_VAL_JSON, vocab)
+    
+    print(f"Loading Val data from: {VAL_IMAGE_DIR}")
+    val_dataset = COCODataset(VAL_IMAGE_DIR, FEATURE_DIR, CAPTION_VAL_JSON, vocab)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4)
     
     # --- 3. Khởi tạo Mô hình và Optimizer ---
@@ -143,10 +151,11 @@ def main():
     cider_metric = CIDErReward(vocab, device)
     
     for epoch in range(SCST_EPOCHS):
+        # Lưu ý: SCST cần train_loader có chứa gt_captions (list string)
         scst_loss = train_scst(model, train_loader, optimizer_scst, cider_metric, vocab, device, beam_size=BEAM_SIZE_SCST)
         print(f"SCST Epoch {epoch+1}/{SCST_EPOCHS} - SCST Loss: {scst_loss:.4f}")
         
-        # Lưu checkpoint SCST (thường lưu epoch cuối cùng hoặc dựa trên val CIDEr)
+        # Lưu checkpoint SCST
         torch.save(model.state_dict(), BEST_SCST_MODEL_PATH)
 
     print("\nHoàn thành huấn luyện.")
