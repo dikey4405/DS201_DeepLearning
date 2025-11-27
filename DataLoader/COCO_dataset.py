@@ -72,7 +72,7 @@ class COCODataset(Dataset):
         return len(self.image_ids)
     
     def __getitem__(self, idx):
-        img_id = self.img_ids[idx]
+        img_id = self.image_ids[idx]
 
         # Tải Đặc trưng (.NPZ)
         feature_path = self.feature_paths.get(img_id)
@@ -100,7 +100,7 @@ class COCODataset(Dataset):
 def collate_fn(data):
     # Sắp xếp data theo độ dài caption (tốt cho việc đệm)
     data.sort(key=lambda x: x[4], reverse=True)
-    img_ids, V_batch, g_batch, captions, lengths, viet_captions_list = zip(*data)
+    image_ids, V_batch, g_batch, captions, lengths, viet_captions_list = zip(*data)
     
     # Xếp chồng V_raw và g_raw
     V_batch = torch.stack(V_batch)
@@ -113,8 +113,7 @@ def collate_fn(data):
         end = lengths[i]
         padded_captions[i, :end] = caption[:end]
         
-    # Trả về img_ids (string), features, tensor (XE), lengths, và list (SCST)
-    return img_ids, V_batch, g_batch, padded_captions, torch.tensor(lengths), viet_captions_list
+    return image_ids, V_batch, g_batch, padded_captions, torch.tensor(lengths), viet_captions_list
 
 
         
