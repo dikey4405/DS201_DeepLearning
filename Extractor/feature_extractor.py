@@ -42,7 +42,6 @@ def get_image_list_from_split(split_info):
     try:
         with open(json_path, 'r', encoding='utf-8') as f:
             annotations = json.load(f)
-            # Annotations là list các dict, mỗi dict có key 'image_name'
             for item in annotations:
                 if 'image_name' in item:
                     image_names.add(item['image_name'])
@@ -65,7 +64,7 @@ def extract_and_save_features():
     os.makedirs(OUTPUT_FEATURE_DIR, exist_ok=True)
     
     try:
-        extractor = TorchvisionFeatureExtractor(d_model=D_MODEL, n_regions=N_REGIONS)
+        extractor = FeatureExtractor(d_model=D_MODEL, n_regions=N_REGIONS)
         print("Đã khởi tạo model ResNet-50 thành công.")
     except Exception as e:
         print(f"Lỗi khởi tạo FeatureExtractor: {e}")
