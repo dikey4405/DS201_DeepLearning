@@ -39,7 +39,6 @@ def train_scst_epoch(model, data_loader, optimizer, cider_metric, vocab, device,
         # sampled_seqs: (Micro_BS * Beam, T)
         sampled_seqs, log_probs = model.sample(V_raw, g_raw, vocab, beam_size=beam_size)
         
-        # Tính reward (đã fix lỗi assert)
         # rewards: (Micro_BS, Beam)
         rewards = cider_metric.compute(sampled_seqs, gt_captions_list, beam_size=beam_size)
         
@@ -71,7 +70,6 @@ def evaluate_cider(model, data_loader, cider_metric, vocab, device):
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            # Greedy check
             sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
             rewards = cider_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
             all_rewards.append(rewards.cpu())
@@ -81,7 +79,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vocab = Vocabulary()
     
-    # Load Vocab
     try:
         print(f"Loading vocab from: {CAPTION_TRAIN_JSON}")
         with open(CAPTION_TRAIN_JSON, 'r', encoding='utf-8') as f:
@@ -99,7 +96,6 @@ def main():
         
     except Exception as e:
         print(f"Error loading vocab: {e}")
-        # In chi tiết lỗi để debug nếu cần
         import traceback
         traceback.print_exc()
         return
@@ -142,5 +138,5 @@ def main():
 
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
     main()
+
