@@ -98,7 +98,7 @@ def main():
     # --- TỐI ƯU: Scheduler + Label Smoothing ---
     optimizer = Adam(model.parameters(), lr=3e-4) # LR khởi điểm cao hơn chút
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=10, verbose=True
+        optimizer, mode='max', factor=0.5, patience=2, verbose=True
     )
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
     cider_metric = CIDErReward(vocab, device)
