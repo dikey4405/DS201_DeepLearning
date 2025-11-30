@@ -1,4 +1,4 @@
-# train_xe.py
+# train_xe.py (Hoàn chỉnh & Tối ưu)
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ from DataLoader.COCO_dataset import COCODataset, Vocabulary, collate_fn
 from DataLoader.Cider_reward import CIDErReward 
 import json
 import os
+import traceback
 
 # --- CONFIG ---
 ROOT_IMAGE_DIR = '/kaggle/input/data-dl/Images/Images' 
@@ -19,7 +20,6 @@ CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json'
 CAPTION_VAL_JSON = '/kaggle/input/data-dl/Captions/dev.json'
 BEST_XE_MODEL_PATH = '/kaggle/working/get_model_best_xe.pth'
 
-# Gradient Accumulation Config
 EFFECTIVE_BATCH_SIZE = 32
 MICRO_BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = EFFECTIVE_BATCH_SIZE // MICRO_BATCH_SIZE
@@ -61,9 +61,8 @@ def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vocab = Vocabulary()
     
-    # Load Vocab
+    vocab = Vocabulary()
     try:
         print(f"Loading vocab from: {CAPTION_TRAIN_JSON}")
         with open(CAPTION_TRAIN_JSON, 'r', encoding='utf-8') as f:
@@ -81,23 +80,30 @@ def main():
         
     except Exception as e:
         print(f"Error loading vocab: {e}")
-        import traceback
         traceback.print_exc()
         return
 
-    # Dataloaders
+    # 2. Dataloaders
+    print(f"Loading Train data from: {TRAIN_IMAGE_DIR}")
     train_dataset = COCODataset(TRAIN_IMAGE_DIR, FEATURE_DIR, CAPTION_TRAIN_JSON, vocab)
     train_loader = DataLoader(train_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=4)
+    
+    print(f"Loading Val data from: {VAL_IMAGE_DIR}")
     val_dataset = COCODataset(VAL_IMAGE_DIR, FEATURE_DIR, CAPTION_VAL_JSON, vocab)
     val_loader = DataLoader(val_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4)
 
-    # Model Setup
+    # 3. Model Setup
     model = GET(len(vocab), 512, 8, 3, 3, controller_type='MAC').to(device)
-    optimizer = Adam(model.parameters(), lr=5e-6)
-    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_idx).to(device)
+    
+    # --- TỐI ƯU: Scheduler + Label Smoothing ---
+    optimizer = Adam(model.parameters(), lr=3e-4) # LR khởi điểm cao hơn chút
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5, patience=2, verbose=True
+    )
+    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
     cider_metric = CIDErReward(vocab, device)
 
-    # Training Loop
+    # 4. Training Loop
     best_val_cider = 0.0
     EPOCHS = 20
     
@@ -106,7 +112,11 @@ def main():
         loss = train_xe_epoch(model, train_loader, optimizer, criterion, device)
         val_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
         
-        print(f"Epoch {epoch+1} | Loss: {loss:.4f} | Val CIDEr: {val_cider:.4f}")
+        # Cập nhật Scheduler
+        scheduler.step(val_cider)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"Epoch {epoch+1} | Loss: {loss:.4f} | Val CIDEr: {val_cider:.4f} | LR: {current_lr:.2e}")
         
         if val_cider > best_val_cider:
             best_val_cider = val_cider
