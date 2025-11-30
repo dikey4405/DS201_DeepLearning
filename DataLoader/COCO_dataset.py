@@ -97,8 +97,7 @@ class COCODataset(Dataset):
             V_raw = torch.tensor(features['V_features'], dtype=torch.float)
             g_raw = torch.tensor(features['g_raw'], dtype=torch.float)
         except Exception as e:
-            # Placeholder nếu lỗi (để debug)
-+            V_raw = torch.randn(36, 2048)
+            V_raw = torch.randn(36, 2048)
             g_raw = torch.randn(2048)
 
         # Lấy TẤT CẢ caption tiếng Việt (dạng string) cho SCST/Evaluation
