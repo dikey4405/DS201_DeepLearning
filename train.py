@@ -144,7 +144,7 @@ def main():
     # --- 4. Pha 1: Pre-training (XE) ---
     print(f"\n=== Bắt đầu Pha 1: XE Training ({XE_EPOCHS} epochs) ===")
     optimizer_xe = Adam(model.parameters(), lr=1e-4) 
-    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token).to(device) 
+    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_idx).to(device) 
     cider_metric = CIDErReward(vocab, device)
     
     best_val_cider = 0.0
