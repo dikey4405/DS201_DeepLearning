@@ -1,33 +1,45 @@
+# DataLoader/COCO_dataset.py
+
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
+from torchvision import transforms 
+import numpy as np 
+from pyvi import ViTokenizer
 import json
 import os
-import cv2 as cv
-from torchvision import transforms
-import numpy as np
 
 class Vocabulary:
     def __init__(self):
-        self.word2idx = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2, "<UNK>": 3}
-        self.idx2word = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
-        self.PAD_idx = 0
-        self.SOS_idx = 1
-        self.EOS_idx = 2
-        self.UNK_idx = 3
+        self.word_to_idx = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2, "<UNK>": 3}
+        self.idx_to_word = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
+        self.PAD_token = 0
+        self.SOS_token = 1
+        self.EOS_token = 2
+        self.UNK_token = 3
 
     def __len__(self):
-        return len(self.word2idx)
-    
-    def build_vocab(self, all_captions_list):
-        word_list = set()
-        for caption in all_captions_list:
-            word_list.update(caption.split())
+        return len(self.word_to_idx)
+
+    def build_vocab(self, all_captions):
+        word_freq = {}
+        print("Building vocabulary using ViTokenizer...")
+        for caption in all_captions:
+            if caption is None or not isinstance(caption, str):
+                continue
+                
+            tokens = ViTokenizer.tokenize(caption).split()
+            
+            for word in tokens:
+                word_freq[word] = word_freq.get(word, 0) + 1
         
-        for word in sorted(list(word_list)):
-            if word not in self.word2idx:
-                idx = len(self.word2idx)
-                self.word2idx[word] = idx
-                self.idx2word[idx] = word
+        threshold = 2 
+        idx = 4
+        for word, count in word_freq.items():
+            if count >= threshold:
+                self.word_to_idx[word] = idx
+                self.idx_to_word[idx] = word
+                idx += 1
+        print(f"Total words in vocab (freq >= {threshold}): {len(self.word_to_idx)}")
 
 class COCODataset(Dataset):
     def __init__(self, image_dir, features_dir, captions_file, vocabulary):
@@ -37,11 +49,12 @@ class COCODataset(Dataset):
         self.vocabulary = vocabulary
 
         try:
+            print(f"Loading annotations from: {captions_file}")
             with open(captions_file, 'r', encoding='utf-8') as f:
                 raw_annotations = json.load(f)
             
-            # Cấu trúc lại annotations thành {image_name: [viet_cap1, viet_cap2, ...]}
             self.annotations = self._reformat_annotations(raw_annotations)
+            print(f"Loaded {len(self.annotations)} images.")
             
         except Exception as e:
             print(f"Lỗi khi tải hoặc xử lý file JSON: {e}")
@@ -55,6 +68,7 @@ class COCODataset(Dataset):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+
     def _reformat_annotations(self, raw_annotations):
         """Chuyển đổi list raw annotations thành dict {image_name: [viet_cap, ...]}"""
         reformatted = {}
@@ -62,10 +76,12 @@ class COCODataset(Dataset):
             img_name = item.get('image_name')
             viet_cap = item.get('translate')
             
-            if img_name and viet_cap:
+            if img_name and viet_cap and isinstance(viet_cap, str):
                 if img_name not in reformatted:
                     reformatted[img_name] = []
-                reformatted[img_name].append(viet_cap.lower().strip())
+                
+                tokenized_cap = ViTokenizer.tokenize(viet_cap.lower().strip())
+                reformatted[img_name].append(tokenized_cap)
         return reformatted
     
     def __len__(self):
@@ -80,8 +96,9 @@ class COCODataset(Dataset):
             features = np.load(feature_path)
             V_raw = torch.tensor(features['V_features'], dtype=torch.float)
             g_raw = torch.tensor(features['g_raw'], dtype=torch.float)
-        except:
-            V_raw = torch.randn(36, 2048)
+        except Exception as e:
+            # Placeholder nếu lỗi (để debug)
++            V_raw = torch.randn(36, 2048)
             g_raw = torch.randn(2048)
 
         # Lấy TẤT CẢ caption tiếng Việt (dạng string) cho SCST/Evaluation
@@ -89,16 +106,16 @@ class COCODataset(Dataset):
         
         # Token hóa MỘT caption (caption đầu tiên) cho huấn luyện XE
         caption_xe = viet_captions_list[0]
-        tokens_xe = [self.vocabulary.word2idx.get(word, self.vocabulary.UNK_idx) 
+        
+        tokens_xe = [self.vocabulary.word_to_idx.get(word, self.vocabulary.UNK_token) 
                      for word in caption_xe.split()]
-        tokens_xe = [self.vocabulary.SOS_idx] + tokens_xe + [self.vocabulary.EOS_idx]
+        
+        tokens_xe = [self.vocabulary.SOS_token] + tokens_xe + [self.vocabulary.EOS_token]
         caption_tensor = torch.tensor(tokens_xe)
 
-        # Trả về img_id (để đánh giá), V_raw, g_raw, tensor (cho XE), list (cho SCST)
         return img_id, V_raw, g_raw, caption_tensor, len(tokens_xe), viet_captions_list
     
 def collate_fn(data):
-    # Sắp xếp data theo độ dài caption (tốt cho việc đệm)
     data.sort(key=lambda x: x[4], reverse=True)
     image_ids, V_batch, g_batch, captions, lengths, viet_captions_list = zip(*data)
     
@@ -106,7 +123,6 @@ def collate_fn(data):
     V_batch = torch.stack(V_batch)
     g_batch = torch.stack(g_batch)
 
-    # Đệm (Pad) captions (cho XE)
     max_len = max(lengths)
     padded_captions = torch.zeros(len(captions), max_len).long()
     for i, caption in enumerate(captions):
@@ -114,7 +130,3 @@ def collate_fn(data):
         padded_captions[i, :end] = caption[:end]
         
     return image_ids, V_batch, g_batch, padded_captions, torch.tensor(lengths), viet_captions_list
-
-
-        
-        
