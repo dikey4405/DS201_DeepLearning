@@ -27,12 +27,13 @@ class Vocabulary:
             if caption is None or not isinstance(caption, str):
                 continue
                 
+            # Tokenize tiếng Việt
             tokens = ViTokenizer.tokenize(caption).split()
             
             for word in tokens:
                 word_freq[word] = word_freq.get(word, 0) + 1
         
-        threshold = 2 
+        threshold = 2 # Ngưỡng tần suất tối thiểu
         idx = 4
         for word, count in word_freq.items():
             if count >= threshold:
@@ -53,6 +54,7 @@ class COCODataset(Dataset):
             with open(captions_file, 'r', encoding='utf-8') as f:
                 raw_annotations = json.load(f)
             
+            # Chỉ giữ lại các mục có caption tiếng Việt hợp lệ
             self.annotations = self._reformat_annotations(raw_annotations)
             print(f"Loaded {len(self.annotations)} images.")
             
@@ -61,6 +63,7 @@ class COCODataset(Dataset):
             self.annotations = {}
 
         self.image_ids = list(self.annotations.keys())
+        # Tạo đường dẫn tới file đặc trưng .npz
         self.feature_paths = {img_id: os.path.join(features_dir, f"{os.path.splitext(img_id)[0]}.npz") 
                               for img_id in self.image_ids}
 
@@ -76,10 +79,12 @@ class COCODataset(Dataset):
             img_name = item.get('image_name')
             viet_cap = item.get('translate')
             
-            if img_name and viet_cap and isinstance(viet_cap, str):
+            # --- LỌC DỮ LIỆU NGHIÊM NGẶT (Nơi xảy ra việc giảm số lượng ảnh) ---
+            if img_name and viet_cap and isinstance(viet_cap, str) and len(viet_cap.strip()) > 0:
                 if img_name not in reformatted:
                     reformatted[img_name] = []
                 
+                # Tokenize ngay khi load để đảm bảo tính nhất quán (SCST và XE)
                 tokenized_cap = ViTokenizer.tokenize(viet_cap.lower().strip())
                 reformatted[img_name].append(tokenized_cap)
         return reformatted
@@ -97,10 +102,11 @@ class COCODataset(Dataset):
             V_raw = torch.tensor(features['V_features'], dtype=torch.float)
             g_raw = torch.tensor(features['g_raw'], dtype=torch.float)
         except Exception as e:
+            # Nếu file .npz bị thiếu, trả về tensor ngẫu nhiên (chỉ nên xảy ra khi debug)
             V_raw = torch.randn(36, 2048)
             g_raw = torch.randn(2048)
 
-        # Lấy TẤT CẢ caption tiếng Việt (dạng string) cho SCST/Evaluation
+        # Lấy TẤT CẢ caption tiếng Việt (dạng string đã tokenize) cho SCST/Evaluation
         viet_captions_list = self.annotations[img_id] 
         
         # Token hóa MỘT caption (caption đầu tiên) cho huấn luyện XE
@@ -112,9 +118,11 @@ class COCODataset(Dataset):
         tokens_xe = [self.vocabulary.SOS_token] + tokens_xe + [self.vocabulary.EOS_token]
         caption_tensor = torch.tensor(tokens_xe)
 
+        # Trả về img_id, V_raw, g_raw, tensor (cho XE), len, list (cho SCST)
         return img_id, V_raw, g_raw, caption_tensor, len(tokens_xe), viet_captions_list
     
 def collate_fn(data):
+    # Sắp xếp data theo độ dài caption (tốt cho việc đệm)
     data.sort(key=lambda x: x[4], reverse=True)
     image_ids, V_batch, g_batch, captions, lengths, viet_captions_list = zip(*data)
     
@@ -122,6 +130,7 @@ def collate_fn(data):
     V_batch = torch.stack(V_batch)
     g_batch = torch.stack(g_batch)
 
+    # Đệm (Pad) captions (cho XE)
     max_len = max(lengths)
     padded_captions = torch.zeros(len(captions), max_len).long()
     for i, caption in enumerate(captions):
