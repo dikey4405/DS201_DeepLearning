@@ -93,7 +93,7 @@ def main():
 
     # Model Setup
     model = GET(len(vocab), 512, 8, 3, 3, controller_type='MAC').to(device)
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    optimizer = Adam(model.parameters(), lr=5e-6)
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_idx).to(device)
     cider_metric = CIDErReward(vocab, device)
 
