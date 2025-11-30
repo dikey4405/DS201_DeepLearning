@@ -184,7 +184,7 @@ class GET(nn.Module):
         # Lặp qua từng beam (trong trường hợp này k=beam_size)
         for k in range(beam_size):
             # Khởi tạo token <SOS>
-            input_seq = torch.full((batch_size, 1), vocab.SOS_idx, dtype=torch.long).to(device)
+            input_seq = torch.full((batch_size, 1), vocab.SOS_token, dtype=torch.long).to(device)
             
             for t in range(max_len):
                 # Tạo mask
@@ -221,7 +221,7 @@ class GET(nn.Module):
                 input_seq = torch.cat([input_seq, sampled_word], dim=1)
                 
                 # Dừng nếu tất cả trong batch đã sinh <EOS>
-                if (sampled_word.squeeze(1) == vocab.EOS_idx).all():
+                if (sampled_word.squeeze(1) == vocab.EOS_token).all():
                     break
                     
         return sampled_seqs, log_probs_sum
