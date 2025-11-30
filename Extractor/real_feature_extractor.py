@@ -9,7 +9,7 @@ D_REGION = 36
 
 class FeatureExtractor:
     """
-    Sử dụng ResNet-50 (ImageNet) để trích xuất đặc trưng 2048D thô.
+    Sử dụng ResNet-101 (ImageNet) để trích xuất đặc trưng 2048D thô.
     Chúng ta giả lập 36 vùng bằng cách lấy các vị trí không gian từ feature map cuối.
     """
 
@@ -18,11 +18,9 @@ class FeatureExtractor:
         self.d_region = d_region
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
 
-        # Tải ResNet50 Pretrained
-        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        # Tải ResNet101 Pretrained
+        resnet = models.resnet101(weights=models.ResNet101_Weights.IMAGENET1K_V1)
 
-        # Loại bỏ lớp fully connected và avgpool cuối cùng
-        # Output sẽ là (Batch, 2048, 7, 7) với ảnh 224x224
         self.feature_extractor = torch.nn.Sequential(*list(resnet.children())[:-2]).to(self.device)
         self.feature_extractor.eval()
 
@@ -34,25 +32,25 @@ class FeatureExtractor:
     def extract(self, image_path):
         image = cv2.imread(image_path)
         if image is None:
-            # Nên raise lỗi hoặc trả về None để vòng lặp bên ngoài xử lý
-            raise FileNotFoundError(f"Không thể đọc ảnh tại {image_path}")
+            return None, None
             
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (224, 224)) # ResNet chuẩn cần 224x224
+        image = cv2.resize(image, (224, 224)) 
 
         image = self.transform(image).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            feature_map = self.feature_extractor(image) # (1, 2048, 7, 7)
+            # Feature map shape: (1, 2048, 7, 7)
+            feature_map = self.feature_extractor(image) 
             
             # 1. Tạo V_raw (Đặc trưng vùng giả lập)
-            # Làm phẳng feature map (1, 2048, 49) -> squeeze -> (2048, 49) -> transpose -> (49, 2048)
+            # Flatten: (1, 2048, 49) -> (2048, 49) -> (49, 2048)
             feature_map_flat = feature_map.view(1, self.d_model, -1).squeeze(0).transpose(0, 1) 
             
             # Lấy N_REGIONS=36 vị trí đầu tiên
             V_features = feature_map_flat[:self.d_region, :].cpu().numpy() # (36, 2048)
 
-            # 2. Tạo g_raw (Đặc trưng toàn cục) - Trung bình của các vùng
+            # 2. Tạo g_raw (Đặc trưng toàn cục)
             g_raw = np.mean(V_features, axis=0).astype(np.float32)
 
         return V_features, g_raw
