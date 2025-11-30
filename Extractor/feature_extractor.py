@@ -56,10 +56,9 @@ def extract_and_save_features():
     print("Bắt đầu quá trình trích xuất đặc trưng...")
     os.makedirs(OUTPUT_FEATURE_DIR, exist_ok=True)
     
-    # Khởi tạo model
     try:
         extractor = FeatureExtractor(d_model=D_MODEL, d_region=N_REGIONS)
-        print("Đã khởi tạo model ResNet-50 thành công.")
+        print("Đã khởi tạo model ResNet-101 thành công.")
     except Exception as e:
         print(f"Lỗi khởi tạo FeatureExtractor: {e}")
         return
@@ -84,13 +83,17 @@ def extract_and_save_features():
             try:
                 V_features, g_raw = extractor.extract(img_full_path)
                 
+                if V_features is None:
+                    print(f"Bỏ qua ảnh lỗi hoặc không đọc được: {img_name}")
+                    continue
+                
                 np.savez_compressed(
                     output_file, 
                     V_features=V_features, 
                     g_raw=g_raw            
                 )
             except Exception as e:
-                print(f"Lỗi ảnh {img_name}: {e}")
+                print(f"Lỗi ngoại lệ khi xử lý ảnh {img_name}: {e}")
                 continue
         
     print(f"\nHoàn thành! File lưu tại: {OUTPUT_FEATURE_DIR}")
