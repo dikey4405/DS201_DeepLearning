@@ -22,7 +22,7 @@ class CIDErReward:
                 if idx == self.vocab.EOS_token:
                     break
                 if idx not in [self.vocab.SOS_token, self.vocab.PAD_token]:
-                    words.append(self.vocab.idx_to_word.get(token, "<UNK>"))
+                    words.append(self.vocab.idx_to_word.get(idx, "<UNK>"))
             decoded.append(" ".join(words))
         return decoded
 
