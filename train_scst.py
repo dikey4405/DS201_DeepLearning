@@ -83,11 +83,26 @@ def main():
     
     # Load Vocab
     try:
+        print(f"Loading vocab from: {CAPTION_TRAIN_JSON}")
         with open(CAPTION_TRAIN_JSON, 'r', encoding='utf-8') as f:
             raw = json.load(f)
-        vocab.build_vocab([i['translate'] for i in raw if 'translate' in i])
+        
+        clean_captions = []
+        for i in raw:
+            val = i.get('translate')
+            if val is not None and isinstance(val, str) and len(val.strip()) > 0:
+                clean_captions.append(val)
+        
+        print(f"Found {len(clean_captions)} valid captions out of {len(raw)} items.")
+        vocab.build_vocab(clean_captions)
+        print(f"Vocab size: {len(vocab)}")
+        
     except Exception as e:
-        print(e); return
+        print(f"Error loading vocab: {e}")
+        # In chi tiết lỗi để debug nếu cần
+        import traceback
+        traceback.print_exc()
+        return
 
     # Dataloaders
     train_dataset = COCODataset(TRAIN_IMAGE_DIR, FEATURE_DIR, CAPTION_TRAIN_JSON, vocab)
@@ -127,4 +142,5 @@ def main():
 
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
     main()
