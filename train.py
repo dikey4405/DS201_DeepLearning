@@ -53,7 +53,6 @@ def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            # Greedy search (beam=1) để đánh giá nhanh
             sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
             rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
             all_rewards.append(rewards.cpu())
@@ -83,7 +82,7 @@ def main():
     # Model Setup
     model = GET(len(vocab), 512, 8, 3, 3, controller_type='MAC').to(device)
     optimizer = Adam(model.parameters(), lr=1e-4)
-    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token).to(device)
+    criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_idx).to(device)
     cider_metric = CIDErReward(vocab, device)
 
     # Training Loop
