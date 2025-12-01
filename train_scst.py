@@ -10,6 +10,7 @@ import os
 import traceback
 import numpy as np
 
+# --- CONFIG (KAGGLE) ---
 ROOT_IMAGE_DIR = '/kaggle/input/data-dl/Images/Images' 
 TRAIN_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'train') 
 VAL_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'dev')
@@ -17,7 +18,7 @@ FEATURE_DIR = '/kaggle/working/coco_features_2048d/'
 CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json'
 CAPTION_VAL_JSON = '/kaggle/input/data-dl/Captions/dev.json'
 
-# Load model XE
+# Load model XE (đã train tốt nhất)
 BEST_XE_MODEL_PATH = '/kaggle/working/get_model_best_xe.pth'
 # Save model SCST mới
 BEST_SCST_MODEL_PATH = '/kaggle/working/get_model_best_scst.pth'
@@ -36,31 +37,26 @@ def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, 
     for i, (_, V_raw, g_raw, _, _, gt_captions_list) in enumerate(data_loader):
         V_raw, g_raw = V_raw.to(device), g_raw.to(device)
         
-        # 1. Lấy mẫu (Sampling) bằng Beam Search hoặc Multinomial
-        # sampled_seqs: (Micro_BS * Beam, T)
+        # 1. Lấy mẫu (Sampling)
         sampled_seqs, log_probs = model.sample(V_raw, g_raw, vocab, beam_size=beam_size)
         
         # 2. Tính Reward (CIDEr)
-        # rewards: (Micro_BS, Beam)
         rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=beam_size)
         
-        # 3. Tính Baseline (Trung bình reward của các beam)
+        # 3. Tính Baseline
         baseline = rewards.mean(dim=1, keepdim=True)
         
-        # 4. Tính Advantage (Lợi thế)
+        # 4. Tính Advantage (Reward đã chuẩn hóa)
         reward_diff = rewards - baseline
         
+        # --- REWARD NORMALIZATION (Quan trọng) ---
         if reward_diff.std() > 0:
             reward_diff = (reward_diff - reward_diff.mean()) / (reward_diff.std() + 1e-9)
         
         # 5. Tính Loss SCST
-        # Reshape log_probs: (Micro_BS, Beam, T)
         log_probs = log_probs.view(V_raw.size(0), beam_size, -1)
-        
-        # Tổng log_prob của cả câu: (Micro_BS, Beam)
         seq_log_probs = log_probs.sum(dim=2)
         
-        # Loss = - Advantage * LogProb
         loss = -reward_diff * seq_log_probs
         loss = loss.mean()
         
@@ -85,7 +81,7 @@ def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            # Dùng Greedy (beam=1) hoặc Beam=3 để đánh giá
+            # Dùng Greedy (beam=1) để đánh giá nhanh
             sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1) 
             rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
             all_rewards.append(rewards.cpu())
@@ -120,28 +116,31 @@ def main():
     val_dataset = COCODataset(VAL_IMAGE_DIR, FEATURE_DIR, CAPTION_VAL_JSON, vocab)
     val_loader = DataLoader(val_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4)
 
-    # 3. Model Setup
-    # Cần khớp tham số với lúc train XE (512, 8, 3, 3)
+    # 3. Model Setup (Tham số phải khớp với train_xe.py)
     model = GET(len(vocab), 512, 8, 3, 3, controller_type='MAC').to(device)
     
-    # --- LOAD MODEL XE ĐÃ TRAIN (0.59 CIDEr) ---
+    # --- LOAD MODEL XE ---
     if os.path.exists(BEST_XE_MODEL_PATH):
         print(f"--> Loading BEST XE Model from: {BEST_XE_MODEL_PATH}")
-        state_dict = torch.load(BEST_XE_MODEL_PATH, map_location=device)
-        model.load_state_dict(state_dict)
+        try:
+            state_dict = torch.load(BEST_XE_MODEL_PATH, map_location=device)
+            model.load_state_dict(state_dict)
+            print("Model loaded successfully.")
+        except Exception as e:
+            print(f"Error loading model weights: {e}")
+            return
     else:
         print("CRITICAL ERROR: Không tìm thấy file model XE! Vui lòng train XE trước.")
         return
 
     # 4. SCST Config
-    # Learning rate rất nhỏ cho SCST (5e-6 hoặc 5e-7)
     optimizer_scst = Adam(model.parameters(), lr=5e-6)
     cider_metric = CIDErReward(vocab, device)
     
     EPOCHS = 15 
     BEAM_SIZE = 5 
     
-    # Lấy baseline CIDEr hiện tại
+    # Check baseline
     print("Checking initial CIDEr of XE model...")
     best_scst_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
     print(f"Initial CIDEr on Dev: {best_scst_cider:.4f}")
@@ -150,12 +149,10 @@ def main():
     
     for epoch in range(EPOCHS):
         scst_loss = train_scst_epoch(model, train_loader, optimizer_scst, cider_metric, vocab, device, BEAM_SIZE)
-        
         val_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
         
         print(f"SCST Epoch {epoch+1}/{EPOCHS} | SCST Loss: {scst_loss:.4f} | Val CIDEr: {val_cider:.4f}")
         
-        # Save if better
         if val_cider > best_scst_cider:
             best_scst_cider = val_cider
             torch.save(model.state_dict(), BEST_SCST_MODEL_PATH)
