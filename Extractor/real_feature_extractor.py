@@ -11,7 +11,6 @@ D_REGION = 49
 class FeatureExtractor:
     """
     Sử dụng ConvNeXt-Large (SOTA CNN) để trích xuất đặc trưng.
-    Mô hình này mạnh hơn ResNet-101/ResNeXt rất nhiều.
     """
 
     def __init__(self, d_model=D_MODEL, d_region=D_REGION):
