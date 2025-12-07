@@ -146,7 +146,7 @@ def main():
     ).to(device)
     
     # 4. Optimizer
-    optimizer = Adam(model.parameters(), lr=3e-4) # LR 3e-4 cho XE là tốt
+    optimizer = Adam(model.parameters(), lr=1e-4) # LR 3e-4 cho XE là tốt
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2, verbose=True)
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
     
