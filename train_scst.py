@@ -127,7 +127,7 @@ def main():
     optimizer_scst = Adam(model.parameters(), lr=5e-7) 
     cider_metric = CIDErReward(vocab, device)
     
-    EPOCHS = 15
+    EPOCHS = 10
     
     print("Checking initial CIDEr...")
     best_scst_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
@@ -149,3 +149,4 @@ def main():
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     main()
+
