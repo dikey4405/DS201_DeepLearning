@@ -106,7 +106,7 @@ def main():
         n_head=8, 
         num_encoder_layers=3, 
         num_decoder_layers=3, 
-        dropout=0.5, 
+        dropout=0.2, 
         controller_type='MAC'
     ).to(device)
     
