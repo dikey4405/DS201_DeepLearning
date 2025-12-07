@@ -106,22 +106,20 @@ def main():
         n_head=8, 
         num_encoder_layers=3, 
         num_decoder_layers=3, 
-        dropout=0.2, 
+        dropout=0.5, 
         controller_type='MAC'
     ).to(device)
     
     # 4. Optimizer
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    optimizer = Adam(model.parameters(), lr=1e-6)
     
-    # --- THAY ĐỔI Ở ĐÂY: Thêm label_smoothing=0.1 ---
-    # Giá trị 0.1 là tiêu chuẩn, giúp model tổng quát hóa tốt hơn
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
     
     cider_metric = CIDErReward(vocab, device)
 
     # 5. Training Loop
     best_val_cider = 0.0
-    EPOCHS = 30
+    EPOCHS = 50
     
     print(f"=== Starting Phase 1: XE Training (With Label Smoothing 0.1) ===")
     for epoch in range(EPOCHS):
