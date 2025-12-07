@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
-# Import Scheduler
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-
 from model.model_vi import GET
 from DataLoader.COCO_dataset import COCODataset, Vocabulary, collate_fn
 from DataLoader.Cider_reward import CIDErReward 
@@ -21,11 +19,11 @@ CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json'
 CAPTION_VAL_JSON = '/kaggle/input/data-dl/Captions/dev.json'
 BEST_XE_MODEL_PATH = '/kaggle/working/get_model_best_xe.pth'
 
+# Batch Size
 EFFECTIVE_BATCH_SIZE = 32
 MICRO_BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = EFFECTIVE_BATCH_SIZE // MICRO_BATCH_SIZE
 
-# --- HÀM TRAIN (Tính Loss) ---
 def train_xe_epoch(model, data_loader, optimizer, criterion, device):
     model.train() 
     total_loss = 0
@@ -43,41 +41,26 @@ def train_xe_epoch(model, data_loader, optimizer, criterion, device):
         loss.backward()
         
         if (i + 1) % GRAD_ACCUM_STEPS == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
             
         total_loss += loss.item() * GRAD_ACCUM_STEPS
     return total_loss / len(data_loader)
 
-# --- HÀM EVALUATE (Tính CIDEr) ---
 def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
-    """
-    Chạy sinh caption trên tập Validation và tính điểm CIDEr trung bình.
-    Sử dụng Greedy Search (beam_size=1) để đánh giá nhanh trong quá trình train.
-    """
     model.eval()
     all_rewards = []
-    
-    # Không cần tính gradient khi evaluate
+    # Dùng Beam=3 để đánh giá chính xác tiềm năng model
+    print("Evaluating CIDEr (Beam=3)...")
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            
-            # 1. Sinh caption (Greedy search: beam_size=1)
-            # Hàm sample trả về (B*1, T)
-            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
-            
-            # 2. Tính điểm CIDEr cho batch này
-            # rewards shape: (B, 1)
-            rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
-            
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=3)
+            rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=3)
             all_rewards.append(rewards.cpu())
-            
-    # Tính trung bình CIDEr trên toàn bộ tập Val
     all_rewards = torch.cat(all_rewards)
-    mean_cider = all_rewards.mean().item()
-    
-    return mean_cider
+    return all_rewards.mean().item()
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,78 +68,55 @@ def main():
     # 1. Load Vocab
     vocab = Vocabulary()
     try:
-        print(f"Loading vocab from: {CAPTION_TRAIN_JSON}")
         with open(CAPTION_TRAIN_JSON, 'r', encoding='utf-8') as f:
             raw = json.load(f)
-        
-        clean_captions = []
-        for i in raw:
-            val = i.get('translate')
-            if val is not None and isinstance(val, str) and len(val.strip()) > 0:
-                clean_captions.append(val)
-        
+        clean_captions = [i.get('translate') for i in raw if i.get('translate') and isinstance(i.get('translate'), str) and len(i.get('translate').strip())>0]
         vocab.build_vocab(clean_captions)
         print(f"Vocab size: {len(vocab)}")
-        
     except Exception as e:
-        print(f"Error loading vocab: {e}")
-        return
+        print(e); return
 
     # 2. Dataloaders
-    print("Initializing Dataloaders...")
     train_dataset = COCODataset(TRAIN_IMAGE_DIR, FEATURE_DIR, CAPTION_TRAIN_JSON, vocab)
     train_loader = DataLoader(train_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=True, collate_fn=collate_fn, num_workers=4)
-    
     val_dataset = COCODataset(VAL_IMAGE_DIR, FEATURE_DIR, CAPTION_VAL_JSON, vocab)
     val_loader = DataLoader(val_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4)
 
-    # 3. Model Setup
+    # 3. Model Setup (Visual Genome Features rất tốt, nên dùng config chuẩn)
     model = GET(
         vocab_size=len(vocab), 
         d_model=512, 
         n_head=8, 
         num_encoder_layers=3, 
-        num_decoder_layers=3, 
-        dropout=0.1, 
+        num_decoder_layers=3, # 3 layers là đủ với features xịn
+        dropout=0.2,          # Dropout vừa phải
         controller_type='MAC'
     ).to(device)
     
-    # 4. Optimizer & Metric
-    optimizer = Adam(model.parameters(), lr=1e-4) 
-    
-    # Scheduler: Giảm LR nếu CIDEr không tăng (mode='max')
-    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
-    
+    # 4. Optimizer
+    optimizer = Adam(model.parameters(), lr=3e-4)
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2, verbose=True)
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
-    
-    # Khởi tạo CIDEr metric để đánh giá
     cider_metric = CIDErReward(vocab, device)
 
     # 5. Training Loop
-    best_val_cider = 0.0 # Theo dõi CIDEr cao nhất
+    best_val_cider = 0.0
     EPOCHS = 30
     
-    print(f"=== Starting Phase 1: XE Training (Saving based on Val CIDEr) ===")
-    
+    print(f"=== Starting Phase 1: XE Training (VG Features) ===")
     for epoch in range(EPOCHS):
-        # Train (vẫn dùng Loss để cập nhật trọng số)
-        train_loss = train_xe_epoch(model, train_loader, optimizer, criterion, device)
-        
-        # Evaluate (Dùng CIDEr để chọn model)
-        print(f"Evaluating Epoch {epoch+1}...")
+        loss = train_xe_epoch(model, train_loader, optimizer, criterion, device)
         val_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
         
-        # Cập nhật Scheduler dựa trên CIDEr
         scheduler.step(val_cider)
         current_lr = optimizer.param_groups[0]['lr']
         
-        print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {train_loss:.4f} | Val CIDEr: {val_cider:.4f} | LR: {current_lr:.2e}")
+        print(f"Epoch {epoch+1} | Loss: {loss:.4f} | Val CIDEr: {val_cider:.4f} | LR: {current_lr:.2e}")
         
-        # Lưu model nếu CIDEr tăng
         if val_cider > best_val_cider:
             best_val_cider = val_cider
             torch.save(model.state_dict(), BEST_XE_MODEL_PATH)
-            print(f"--> Saved Best XE Model (New Best CIDEr: {best_val_cider:.4f})")
+            print(f"--> Saved Best XE Model (CIDEr: {best_val_cider:.4f})")
 
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
