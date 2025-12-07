@@ -6,6 +6,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from model.model_vi import GET
 from DataLoader.COCO_dataset import COCODataset, Vocabulary, collate_fn
 from DataLoader.Cider_reward import CIDErReward 
+# Import cần thiết cho evaluate_cider mới
+from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
+from pycocoevalcap.cider.cider import Cider
 import json
 import os
 import traceback
@@ -48,19 +51,68 @@ def train_xe_epoch(model, data_loader, optimizer, criterion, device):
         total_loss += loss.item() * GRAD_ACCUM_STEPS
     return total_loss / len(data_loader)
 
-def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
+# --- HÀM EVALUATE CIDEr (CORPUS LEVEL - CHUẨN) ---
+def evaluate_cider(model, data_loader, vocab, device):
+    """
+    Đánh giá CIDEr trên TOÀN BỘ tập dữ liệu (Corpus-level).
+    """
     model.eval()
-    all_rewards = []
-    # Dùng Beam=3 để đánh giá chính xác tiềm năng model
-    print("Evaluating CIDEr (Beam=3)...")
+    
+    # Containers để chứa toàn bộ kết quả
+    gts = {} # Ground Truths
+    res = {} # Results (Predictions)
+    
+    print("Generating captions for Evaluation (Greedy)...")
+    
+    # Hàm decode từ index sang string
+    def decode_seq(seq):
+        words = []
+        for idx in seq:
+            idx = idx.item()
+            if idx == vocab.EOS_token: break
+            if idx not in [vocab.SOS_token, vocab.PAD_token]:
+                words.append(vocab.idx_to_word.get(idx, "<UNK>"))
+        return " ".join(words)
+
     with torch.no_grad():
-        for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
+        for batch_idx, (img_ids, V_raw, g_raw, _, _, gt_captions_list) in enumerate(data_loader):
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=3)
-            rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=3)
-            all_rewards.append(rewards.cpu())
-    all_rewards = torch.cat(all_rewards)
-    return all_rewards.mean().item()
+            
+            # 1. Sinh caption (Greedy Search cho nhanh và ổn định ở Pha 1)
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
+            
+            # 2. Gom kết quả
+            for i in range(len(img_ids)):
+                # Tạo ID duy nhất cho ảnh (img_ids từ dataloader là tuple)
+                image_id = str(img_ids[i])
+                
+                # Decode câu sinh ra
+                pred_sent = decode_seq(sampled_seqs[i])
+                
+                # Lưu vào dict theo chuẩn COCO eval
+                res[image_id] = [{'caption': pred_sent}]
+                gts[image_id] = [{'caption': c} for c in gt_captions_list[i]]
+                
+                # --- DEBUG: In ra 2 mẫu đầu tiên để xem model nói gì ---
+                if batch_idx == 0 and i < 2:
+                    print(f"\n[DEBUG Sample {i}]")
+                    print(f"  GT: {gt_captions_list[i][0]}")
+                    print(f"  Pred: {pred_sent}")
+
+    # 3. Tính điểm CIDEr một lần cho toàn bộ tập
+    print(f"Computing CIDEr for {len(res)} images...")
+    
+    # Tokenize (Chuẩn hóa dấu câu, khoảng trắng...)
+    # Lưu ý: PTBTokenizer có thể in ra một số log, không cần lo lắng
+    tokenizer = PTBTokenizer()
+    gts_tokenized = tokenizer.tokenize(gts)
+    res_tokenized = tokenizer.tokenize(res)
+    
+    # Compute Score
+    scorer = Cider()
+    score, _ = scorer.compute_score(gts_tokenized, res_tokenized)
+    
+    return score
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -94,19 +146,22 @@ def main():
     ).to(device)
     
     # 4. Optimizer
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    optimizer = Adam(model.parameters(), lr=3e-4) # LR 3e-4 cho XE là tốt
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2, verbose=True)
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
-    cider_metric = CIDErReward(vocab, device)
+    
+    # Lưu ý: Không cần khởi tạo CIDErReward ở đây vì hàm evaluate_cider tự lo
 
     # 5. Training Loop
     best_val_cider = 0.0
     EPOCHS = 30
     
-    print(f"=== Starting Phase 1: XE Training (VG Features) ===")
+    print(f"=== Starting Phase 1: XE Training (Corpus Eval) ===")
     for epoch in range(EPOCHS):
         loss = train_xe_epoch(model, train_loader, optimizer, criterion, device)
-        val_cider = evaluate_cider(model, val_loader, cider_metric, vocab, device)
+        
+        # Gọi hàm evaluate mới (không cần truyền metric object)
+        val_cider = evaluate_cider(model, val_loader, vocab, device)
         
         scheduler.step(val_cider)
         current_lr = optimizer.param_groups[0]['lr']
