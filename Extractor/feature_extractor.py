@@ -81,10 +81,12 @@ def extract_and_save_features():
                 continue
                 
             try:
+                # Gọi hàm extract
                 V_features, g_raw = extractor.extract(img_full_path)
                 
+                # Kiểm tra nếu extractor trả về None (do ảnh lỗi/không đọc được)
                 if V_features is None:
-                    print(f"Bỏ qua ảnh lỗi hoặc không đọc được: {img_name}")
+                    print(f"\n[CẢNH BÁO] Không đọc được ảnh: {img_name} (Path: {img_full_path})")
                     continue
                 
                 np.savez_compressed(
@@ -93,7 +95,10 @@ def extract_and_save_features():
                     g_raw=g_raw            
                 )
             except Exception as e:
-                print(f"Lỗi ngoại lệ khi xử lý ảnh {img_name}: {e}")
+                # --- SỬA LẠI ĐOẠN NÀY ĐỂ DEBUG ---
+                print(f"\n[LỖI NGHIÊM TRỌNG] Tại ảnh: {img_name}")
+                print(f"Nội dung lỗi: {str(e)}")
+                # Tiếp tục chạy sang ảnh tiếp theo thay vì dừng chương trình
                 continue
         
     print(f"\nHoàn thành! File lưu tại: {OUTPUT_FEATURE_DIR}")
