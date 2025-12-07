@@ -122,7 +122,7 @@ def main():
     ).to(device)
     
     # 4. Optimizer & Metric
-    optimizer = Adam(model.parameters(), lr=5e-6) 
+    optimizer = Adam(model.parameters(), lr=1e-4) 
     
     # Scheduler: Giảm LR nếu CIDEr không tăng (mode='max')
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
