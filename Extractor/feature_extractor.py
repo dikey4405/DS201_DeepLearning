@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import json
 from tqdm import tqdm
-from real_feature_extractor import FeatureExtractor 
+from vg_extractor import VisualGenomeExtractor
 
 DATASET_ROOT = '/kaggle/input/data-dl'
 OUTPUT_FEATURE_DIR = '/kaggle/working/coco_features_2048d/'
@@ -57,10 +57,10 @@ def extract_and_save_features():
     os.makedirs(OUTPUT_FEATURE_DIR, exist_ok=True)
     
     try:
-        extractor = FeatureExtractor(d_model=D_MODEL, d_region=N_REGIONS)
-        print("Đã khởi tạo model ResNet-101 thành công.")
+        # Khởi tạo VisualGenomeExtractor
+        extractor = VisualGenomeExtractor(d_model=D_MODEL, d_region=N_REGIONS)
     except Exception as e:
-        print(f"Lỗi khởi tạo FeatureExtractor: {e}")
+        print(f"Lỗi: {e}")
         return
 
     for split in SPLITS:
