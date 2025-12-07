@@ -111,7 +111,7 @@ def main():
     ).to(device)
     
     # 4. Optimizer
-    optimizer = Adam(model.parameters(), lr=1e-5)
+    optimizer = Adam(model.parameters(), lr=1e-3)
     
     criterion = nn.CrossEntropyLoss(ignore_index=vocab.PAD_token, label_smoothing=0.1).to(device)
     
