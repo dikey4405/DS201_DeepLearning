@@ -1,5 +1,3 @@
-# train_scst.py (Stable Version)
-
 import torch
 import torch.nn as nn
 from torch.optim import Adam
@@ -26,7 +24,7 @@ EFFECTIVE_BATCH_SIZE = 32
 MICRO_BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = EFFECTIVE_BATCH_SIZE // MICRO_BATCH_SIZE
 
-# --- HÀM TRAIN SCST (GREEDY BASELINE) ---
+# --- HÀM TRAIN SCST ---
 def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, device):
     model.train()
     total_loss = 0
@@ -35,45 +33,33 @@ def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, 
     for i, (_, V_raw, g_raw, _, _, gt_captions_list) in enumerate(data_loader):
         V_raw, g_raw = V_raw.to(device), g_raw.to(device)
         
-        # --- BƯỚC 1: Lấy mẫu Greedy (Làm Baseline) ---
-        model.eval() 
+        # 1. Greedy Baseline (Beam=1)
+        model.eval()
         with torch.no_grad():
-            # Beam_size=1 -> Greedy Search
             greedy_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
-            # Tính reward cho greedy (Baseline)
             reward_baseline = cider_reward_metric.compute(greedy_seqs, gt_captions_list, beam_size=1)
-            # reward_baseline shape: (Micro_BS, 1)
         
-        # --- BƯỚC 2: Lấy mẫu Multinomial (Để học) ---
+        # 2. Sample (Beam=5)
         model.train()
         sample_beam_size = 5
         sampled_seqs, log_probs = model.sample(V_raw, g_raw, vocab, beam_size=sample_beam_size)
-        
-        # Tính reward cho mẫu
         reward_sample = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=sample_beam_size)
-        # reward_sample shape: (Micro_BS, 5)
         
-        # --- BƯỚC 3: Tính Advantage ---
+        # 3. Advantage
         reward_baseline = reward_baseline.expand(-1, sample_beam_size)
-        
-        # Reward = Sample - Greedy
         reward_diff = reward_sample - reward_baseline
         
-        # (Optional) Reward Normalization: Giữ lại để ổn định gradient
         if reward_diff.std() > 0:
              reward_diff = (reward_diff - reward_diff.mean()) / (reward_diff.std() + 1e-9)
         
-        # --- BƯỚC 4: Tính Loss ---
-        # Reshape log_probs: (Micro_BS, 5, T)
+        # 4. Loss
         log_probs = log_probs.view(V_raw.size(0), sample_beam_size, -1)
+        seq_log_probs = log_probs.sum(dim=2)
         
-        seq_log_probs = log_probs.sum(dim=2) # (Micro_BS, 5)
-        
-        # Loss = - (Sample - Greedy) * LogProb(Sample)
         loss = -reward_diff * seq_log_probs
         loss = loss.mean()
         
-        # --- BƯỚC 5: Gradient Accumulation ---
+        # 5. Accumulate
         loss = loss / GRAD_ACCUM_STEPS
         loss.backward()
         
@@ -94,7 +80,6 @@ def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            # Eval bằng Greedy
             sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1) 
             rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
             all_rewards.append(rewards.cpu())
@@ -120,7 +105,15 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=MICRO_BATCH_SIZE, shuffle=False, collate_fn=collate_fn, num_workers=4)
 
     # 3. Model Setup
-    model = GET(len(vocab), 512, 8, 3, 3, controller_type='MAC').to(device)
+    model = GET(
+        vocab_size=len(vocab), 
+        d_model=512, 
+        n_head=8, 
+        num_encoder_layers=3, 
+        num_decoder_layers=3, 
+        dropout=0.2, 
+        controller_type='MAC'
+    ).to(device)
     
     # Load XE Model
     if os.path.exists(BEST_XE_MODEL_PATH):
@@ -130,7 +123,8 @@ def main():
         print("CRITICAL: XE Model not found!"); return
 
     # 4. SCST Config
-    optimizer_scst = Adam(model.parameters(), lr=5e-7) # Giảm từ 5e-6 xuống 1e-6
+    # LR cực thấp 5e-7
+    optimizer_scst = Adam(model.parameters(), lr=5e-7) 
     cider_metric = CIDErReward(vocab, device)
     
     EPOCHS = 15
