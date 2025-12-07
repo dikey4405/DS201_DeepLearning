@@ -13,12 +13,11 @@ import numpy as np
 ROOT_IMAGE_DIR = '/kaggle/input/data-dl/Images/Images' 
 TRAIN_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'train') 
 VAL_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'dev')
-FEATURE_DIR = '/kaggle/input/coco-features/kaggle/working/coco_features_2048d/'
-
+FEATURE_DIR = '/kaggle/working/coco_features_2048d/'
 CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json'
 CAPTION_VAL_JSON = '/kaggle/input/data-dl/Captions/dev.json'
 
-BEST_XE_MODEL_PATH = '/kaggle/input/train-xe-dl/pytorch/default/1/get_model_best_xe.pth'
+BEST_XE_MODEL_PATH = '/kaggle/working/get_model_best_xe.pth'
 BEST_SCST_MODEL_PATH = '/kaggle/working/get_model_best_scst.pth'
 
 EFFECTIVE_BATCH_SIZE = 32
@@ -150,6 +149,3 @@ def main():
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     main()
-
-
-
