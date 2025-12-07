@@ -46,7 +46,6 @@ class VisualGenomeExtractor:
         if img is None:
             return None, None
         
-        # Xử lý kênh màu
         if len(img.shape) == 2: # Grayscale
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         elif img.shape[2] == 4: # RGBA
@@ -71,26 +70,12 @@ class VisualGenomeExtractor:
                 # Lấy Region Proposals
                 proposals, _ = self.model.proposal_generator(images, features, None)
                 
-                # Lấy Box Features (RoI Pooling)
-                #instances, _ = self.model.roi_heads(images, features, proposals, None) # Không gọi hàm này trực tiếp vì nó trả về kết quả cuối
-                
-                # Chúng ta cần can thiệp vào quá trình forward của roi_heads để lấy feature
-                
-                # Bước A: Lấy proposal boxes (cần lọc bớt nếu quá nhiều, ở đây lấy top N_REGIONS từ proposal_generator là tốt nhất, nhưng để đơn giản ta lấy từ output của proposal generator)
-                # Tuy nhiên, proposal_generator trả về 1000 proposal. Ta cần lọc NMS trước.
-                # Cách nhanh nhất: Gọi forward chuẩn nhưng lấy features từ bên trong (hook) hoặc gọi thủ công các lớp con.
-                
-                # Để an toàn và chuẩn C4, ta gọi thủ công các bước của Res5ROIHeads:
-                
-                # 1. Lấy boxes từ proposals (ở đây dùng proposals thô, trong thực tế model sẽ lọc lại)
-                # Nhưng để chính xác như bài báo (dùng detected boxes), ta cần chạy qua box_predictor.
-                # Cách đơn giản nhất: Chạy forward đầy đủ để lấy instances (đã NMS), sau đó trích feature lại cho các instances đó.
+                # 1. Lấy boxes từ proposals
                 instances, _ = self.model.roi_heads(images, features, proposals, None)
                 
                 # Lấy các hộp dự đoán cuối cùng (Detected Boxes)
                 pred_boxes = [x.pred_boxes for x in instances]
                 
-                # --- SỬA LỖI TẠI ĐÂY: Dùng .pooler thay vì .box_pooler ---
                 # Trích xuất feature từ res4 (feature map backbone) dựa trên các hộp dự đoán
                 box_features = self.model.roi_heads.pooler(
                     [features[f] for f in self.cfg.MODEL.ROI_HEADS.IN_FEATURES], 
@@ -108,7 +93,6 @@ class VisualGenomeExtractor:
                     padding = torch.zeros((self.d_region - box_features.size(0), self.d_model), device=self.device)
                     V_features = torch.cat([box_features, padding], dim=0)
                 else:
-                    # Detectron2 thường sắp xếp theo score giảm dần, nên lấy top đầu là đúng
                     V_features = box_features[:self.d_region]
 
                 V_features = V_features.cpu().numpy()
@@ -119,6 +103,4 @@ class VisualGenomeExtractor:
             return V_features, g_raw
 
         except Exception as e:
-            # Bắt lỗi nếu có trục trặc trong quá trình forward
-            # print(f"Lỗi nội bộ Detectron2 tại ảnh {image_path}: {e}")
             return None, None
