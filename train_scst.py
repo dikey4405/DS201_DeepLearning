@@ -146,7 +146,7 @@ def main():
     # 4. SCST Config [QUAN TRỌNG NHẤT]
     # LR cực thấp: 5e-7 (Năm mũ trừ bảy)
     # Đây là chìa khóa để không phá vỡ model
-    optimizer_scst = Adam(model.parameters(), lr=5e-7) 
+    optimizer_scst = Adam(model.parameters(), lr=5e-6)
     cider_metric = CIDErReward(vocab, device)
     
     EPOCHS = 15
@@ -177,3 +177,4 @@ def main():
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     main()
+
