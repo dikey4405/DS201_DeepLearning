@@ -124,7 +124,7 @@ def main():
 
     # 4. SCST Config
     # LR cực thấp 5e-7
-    optimizer_scst = Adam(model.parameters(), lr=5e-7) 
+    optimizer_scst = Adam(model.parameters(), lr=5e-6) 
     cider_metric = CIDErReward(vocab, device)
     
     EPOCHS = 10
@@ -149,3 +149,4 @@ def main():
 if __name__ == '__main__':
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     main()
+
