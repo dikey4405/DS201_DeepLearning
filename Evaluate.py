@@ -1,111 +1,157 @@
 import json
 import os
+import sys
 from pycocotools.coco import COCO
 from pycocoevalcap.eval import COCOEvalCap
 from tqdm import tqdm
 
 # --- CẤU HÌNH ---
-# File JSON nguồn của tập TEST
-SOURCE_TEST_JSON = './data/test_captions.json' 
-# File JSON Ground Truth COCO chuẩn (sẽ được tạo)
-GROUND_TRUTH_JSON = './data/coco_vietnamese_gt_test.json'
-# File JSON Results (được tạo bởi generate.py)
-RESULT_JSON = './caption_results.json' 
+# 1. File Ground Truth gốc (để lấy caption chuẩn)
+SOURCE_TEST_JSON = '/kaggle/input/data-dl/Captions/test.json' 
+
+# 2. File kết quả sinh ra từ generate.py
+RESULT_JSON_INPUT = 'caption_readable.json' 
+if not os.path.exists(RESULT_JSON_INPUT):
+    # Nếu không thấy file readable, dùng file kết quả chuẩn
+    RESULT_JSON_INPUT = '/kaggle/working/caption_results.json'
+
+GROUND_TRUTH_COCO_JSON = 'coco_vietnamese_gt_test.json'
+RESULT_COCO_JSON = 'coco_results_formatted.json'
 
 def _reformat_annotations(raw_annotations):
-    """Tái cấu trúc file JSON nguồn (dạng List) thành dictionary {image_name: [viet_cap, ...]}"""
+    """Chuyển đổi list annotation gốc thành dict {image_name: [list_captions]}"""
     reformatted = {}
     for item in raw_annotations:
         img_name = item.get('image_name')
-        viet_cap = item.get('translate') 
+        viet_cap = item.get('translate') # Key chứa caption tiếng Việt
+        
         if img_name and viet_cap:
             if img_name not in reformatted:
                 reformatted[img_name] = []
             reformatted[img_name].append(viet_cap.lower().strip())
     return reformatted
 
-def convert_annotations_to_coco_format(source_json_path, output_json_path):
-    """Chuyển đổi file JSON nguồn của bạn thành định dạng JSON COCO Annotations chuẩn."""
-    print(f"Bắt đầu chuyển đổi JSON nguồn ({source_json_path}) thành COCO GT...")
+def convert_gt_to_coco(source_json_path, output_json_path):
+    """Tạo file Ground Truth theo chuẩn COCO (cần ID số nguyên)."""
+    print(f"Đang tạo file Ground Truth chuẩn COCO từ: {source_json_path}")
     
     with open(source_json_path, 'r', encoding='utf-8') as f:
         raw_annotations = json.load(f)
-    reformatted_data = _reformat_annotations(raw_annotations)
     
-    annotations = []
+    data_dict = _reformat_annotations(raw_annotations)
+    
     images = []
-    annotation_id = 1
-    image_names = list(reformatted_data.keys())
-    name_to_id = {name: i + 1 for i, name in enumerate(image_names)}
+    annotations = []
     
-    for name in tqdm(image_names, desc="Tạo cấu trúc COCO"):
-        img_id = name_to_id[name]
-        images.append({'id': img_id, 'file_name': name})
-        caps = reformatted_data[name]
-        for caption in caps:
-            annotations.append({'id': annotation_id, 'image_id': img_id, 'caption': caption})
-            annotation_id += 1
-
-    coco_format = {'info': {}, 'licenses': [], 'images': images, 'annotations': annotations}
+    # Tạo mapping: filename (string) -> id (int)
+    # Vì COCO yêu cầu image_id phải là số nguyên (hoặc string số)
+    filename_to_id = {}
+    
+    ann_id = 1
+    for idx, (filename, caps) in enumerate(tqdm(data_dict.items(), desc="Formatting GT")):
+        # Tạo ID ảo dựa trên index (1, 2, 3...)
+        img_id = idx + 1
+        filename_to_id[filename] = img_id
+        
+        images.append({'id': img_id, 'file_name': filename})
+        
+        for c in caps:
+            annotations.append({
+                'id': ann_id,
+                'image_id': img_id,
+                'caption': c
+            })
+            ann_id += 1
+            
+    coco_format = {
+        'info': {'description': 'Vietnamese Captions GT'},
+        'licenses': [],
+        'images': images,
+        'annotations': annotations
+    }
     
     with open(output_json_path, 'w', encoding='utf-8') as f:
-        json.dump(coco_format, f, ensure_ascii=False, indent=4)
-    print(f"Hoàn thành. JSON Ground Truth đã lưu tại: {output_json_path}")
-    return name_to_id
+        json.dump(coco_format, f, ensure_ascii=False)
+        
+    return filename_to_id
 
-def create_result_json(generated_captions_dict, name_to_id):
-    """Chuyển đổi dictionary kết quả sinh ra {image_name: caption} sang định dạng JSON COCO Results."""
-    print("Tạo JSON Results...")
-    coco_results = []
-    for img_name, caption in generated_captions_dict.items():
-        if img_name in name_to_id:
-            img_id = name_to_id[img_name]
-            coco_results.append({'image_id': img_id, 'caption': str(caption).lower().strip()})
+def convert_pred_to_coco(pred_json_path, output_json_path, filename_to_id):
+    """Chuyển file dự đoán sang chuẩn COCO Results (khớp ID với file GT)."""
+    print(f"Đang định dạng file dự đoán: {pred_json_path}")
     
-    with open(RESULT_JSON, 'w', encoding='utf-8') as f:
-        json.dump(coco_results, f, ensure_ascii=False, indent=4)
-    print(f"JSON Results đã lưu tại: {RESULT_JSON}")
-    return RESULT_JSON
+    with open(pred_json_path, 'r', encoding='utf-8') as f:
+        preds = json.load(f)
+    
+    coco_results = []
+    
+    # Xử lý input tùy theo format (Dict hay List)
+    if isinstance(preds, dict):
+        # Format: {"filename.jpg": "caption"}
+        iterator = preds.items()
+    elif isinstance(preds, list):
+        # Format: [{"image_id": "filename.jpg", "caption": "..."}]
+        iterator = [(p['image_id'], p['caption']) for p in preds]
+    else:
+        print("Lỗi: Định dạng file kết quả không hợp lệ.")
+        return False
 
-def evaluate_captions(ground_truth_json, result_json):
-    """Thực hiện đánh giá bằng COCOEvalCap."""
-    print("\n--- BẮT ĐẦU ĐÁNH GIÁ ---")
+    for filename, caption in iterator:
+        # Tìm ID số nguyên tương ứng của filename này
+        img_id = filename_to_id.get(filename)
+        
+        if img_id:
+            coco_results.append({
+                'image_id': img_id,
+                'caption': str(caption).lower().strip()
+            })
+            
+    with open(output_json_path, 'w', encoding='utf-8') as f:
+        json.dump(coco_results, f, ensure_ascii=False)
+        
+    return True
+
+def evaluate(gt_path, res_path):
+    # Suppress print của thư viện COCO (nếu muốn gọn)
+    # sys.stdout = open(os.devnull, 'w') 
+    
     try:
-        coco = COCO(ground_truth_json)
-        coco_res = coco.loadRes(result_json)
+        # 1. Load GT
+        coco = COCO(gt_path)
+        # 2. Load Res
+        coco_res = coco.loadRes(res_path)
+        
+        # 3. Eval
         coco_eval = COCOEvalCap(coco, coco_res)
         coco_eval.params['image_id'] = coco_res.getImgIds()
         coco_eval.evaluate()
         
-        print("\n--- KẾT QUẢ ĐÁNH GIÁ CUỐI CÙNG ---")
-        metrics = {}
+        # In kết quả đẹp
+        print("\n" + "="*40)
+        print("   KẾT QUẢ ĐÁNH GIÁ (SCST + Faster R-CNN)")
+        print("="*40)
         for metric, score in coco_eval.eval.items():
-            print(f"{metric}: {score*100:.2f}%")
-            metrics[metric] = score
-        return metrics
+            print(f"| {metric:10s} | {score*100:6.2f}% |")
+        print("="*40)
+        
     except Exception as e:
-        print(f"Lỗi trong quá trình đánh giá COCOEvalCap: {e}")
-        return None
+        print(f"\n[LỖI EVAL]: {e}")
+        print("Gợi ý: Nếu lỗi SPICE, hãy kiểm tra Java đã cài chưa.")
+    # finally:
+        # sys.stdout = sys.__stdout__ # Restore print
 
 if __name__ == '__main__':
-    # 1. Chuẩn bị Ground Truth (Chỉ chạy 1 lần)
-    if not os.path.exists(GROUND_TRUTH_JSON):
-        name_to_id_map = convert_annotations_to_coco_format(SOURCE_TEST_JSON, GROUND_TRUTH_JSON)
+    # 1. Tạo file GT chuẩn COCO (và lấy mapping ID)
+    if os.path.exists(SOURCE_TEST_JSON):
+        filename_to_id = convert_gt_to_coco(SOURCE_TEST_JSON, GROUND_TRUTH_COCO_JSON)
     else:
-        # Tải lại name_to_id map nếu file GT đã tồn tại
-        with open(GROUND_TRUTH_JSON, 'r', encoding='utf-8') as f:
-            gt_data = json.load(f)
-            name_to_id_map = {img['file_name']: img['id'] for img in gt_data['images']}
-        print("Đã tìm thấy file Ground Truth JSON.")
+        print(f"Lỗi: Không tìm thấy file gốc {SOURCE_TEST_JSON}"); exit()
 
-    # 2. Tạo JSON Results (từ file đã sinh)
-    try:
-        with open(RESULT_JSON, 'r', encoding='utf-8') as f:
-            generated_results_dict = json.load(f)
-        create_result_json(generated_results_dict, name_to_id_map)
-    except FileNotFoundError:
-        print(f"Lỗi: Không tìm thấy file {RESULT_JSON}. Vui lòng chạy generate.py trước.")
-        exit()
-        
-    # 3. Đánh giá
-    evaluate_captions(GROUND_TRUTH_JSON, RESULT_JSON)
+    # 2. Chuẩn hóa file dự đoán
+    if os.path.exists(RESULT_JSON_INPUT):
+        success = convert_pred_to_coco(RESULT_JSON_INPUT, RESULT_COCO_JSON, filename_to_id)
+        if not success: exit()
+    else:
+        print(f"Lỗi: Không tìm thấy file kết quả {RESULT_JSON_INPUT}. Chạy generate.py chưa?"); exit()
+
+    # 3. Chạy đánh giá
+    evaluate(GROUND_TRUTH_COCO_JSON, RESULT_COCO_JSON)
