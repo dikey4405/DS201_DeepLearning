@@ -26,7 +26,7 @@ if not os.path.exists(CHECKPOINT_PATH):
     print("Không tìm thấy model SCST, chuyển sang dùng model XE...")
     CHECKPOINT_PATH = '/kaggle/input/image-captioning/pytorch/default/1/get_model_best_xe (1).pth'
 
-OUTPUT_RESULT_FILE = 'caption_results.json'
+OUTPUT_RESULT_FILE = '/kaggle/working/caption_results.json'
 
 # Tham số mô hình (PHẢI KHỚP TUYỆT ĐỐI VỚI train_xe.py)
 D_MODEL = 512
