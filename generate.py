@@ -1,124 +1,148 @@
-# generate.py
-
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
 from model.model_vi import GET
 from DataLoader.COCO_dataset import COCODataset, Vocabulary, collate_fn
 from torch.utils.data import DataLoader
 import json
+import os
 from tqdm import tqdm
+import numpy as np
 
-# --- CONFIG ---
-IMAGE_DIR = './data/coco_images/'
-FEATURE_DIR = './data/coco_features_2048d/'
-CAPTION_TEST_JSON = './data/test_captions.json' # File JSON của tập TEST
-CAPTION_TRAIN_JSON = './data/train_captions.json' # Cần để build vocab
-CHECKPOINT_PATH = 'get_model_best_scst.pth' # Dùng checkpoint SCST cuối cùng
-OUTPUT_RESULT_FILE = 'caption_results.json' # File JSON kết quả
+# --- CONFIG (Cần khớp với môi trường Kaggle của bạn) ---
+# Đường dẫn tới thư mục chứa ảnh gốc (để dataloader lấy ID, không load ảnh thật)
+ROOT_IMAGE_DIR = '/kaggle/input/data-dl/Images/Images' 
+TEST_IMAGE_DIR = os.path.join(ROOT_IMAGE_DIR, 'test') 
 
-# Tham số mô hình (PHẢI KHỚP VỚI train.py)
+# Đường dẫn tới thư mục chứa features .npz
+FEATURE_DIR = '/kaggle/working/coco_features_2048d' 
+
+# File JSON Caption
+CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json' # Cần để build lại Vocab
+CAPTION_TEST_JSON = '/kaggle/input/data-dl/Captions/test.json'   # Tập cần sinh caption
+
+# File Checkpoint (Ưu tiên SCST, nếu chưa có thì dùng XE)
+CHECKPOINT_PATH = '/kaggle/input/image-captioning/pytorch/default/1/get_model_best_scst.pth'
+if not os.path.exists(CHECKPOINT_PATH):
+    print("Không tìm thấy model SCST, chuyển sang dùng model XE...")
+    CHECKPOINT_PATH = '/kaggle/input/image-captioning/pytorch/default/1/get_model_best_xe (1).pth'
+
+OUTPUT_RESULT_FILE = 'caption_results.json'
+
+# Tham số mô hình (PHẢI KHỚP TUYỆT ĐỐI VỚI train_xe.py)
 D_MODEL = 512
 N_HEAD = 8
 NUM_ENCODER_LAYERS = 3
 NUM_DECODER_LAYERS = 3
+DROPOUT = 0.2
 CONTROLLER_TYPE = 'MAC'
-BEAM_SIZE_INFERENCE = 3 # Beam size 3 cho inference
-MAX_LEN = 50
+BEAM_SIZE_INFERENCE = 3 # Beam 3 là chuẩn cho kết quả tốt nhất
 
-def generate_caption_beam_search(model, V_raw, g_raw, vocab):
-    """Thực hiện Beam Search (B=1) cho inference."""
-    model.eval()
-    device = V_raw.device
-    
-    # 1. Chạy Encoder một lần
-    V0 = model.v_proj(V_raw)
-    g0 = model.g_proj(g_raw)
-    V_L, g_F = model.encoder(V0, g0) # (1, N, D), (1, D)
-
-    # 2. Khởi tạo Beam
-    beams = [(0.0, [vocab.SOS_token])] 
-    final_candidates = []
-    
-    for _ in range(MAX_LEN):
-        new_beams = []
-        current_beams = sorted(beams, key=lambda x: x[0], reverse=True)[:BEAM_SIZE_INFERENCE]
-        
-        if not current_beams: break
-            
-        for score, seq in current_beams:
-            if seq[-1] == vocab.EOS_token:
-                final_candidates.append((score / (len(seq) - 1), seq))
-                continue
-
-            input_seq = torch.tensor([seq], dtype=torch.long, device=device)
-            
-            with torch.no_grad():
-                output = model(V_raw, g_raw, input_seq)
-            log_probs = F.log_softmax(output[0, -1, :], dim=-1)
-            topk_log_probs, topk_indices = torch.topk(log_probs, BEAM_SIZE_INFERENCE)
-
-            for i in range(BEAM_SIZE_INFERENCE):
-                next_word_idx = topk_indices[i].item()
-                next_log_prob = topk_log_probs[i].item()
-                new_score = score + next_log_prob
-                new_seq = seq + [next_word_idx]
-                new_beams.append((new_score, new_seq))
-        beams = new_beams
-
-    if not final_candidates:
-        final_candidates = [ (score / (len(seq) - 1), seq) for score, seq in beams]
-
-    _, final_best_seq = max(final_candidates, key=lambda x: x[0]) 
-    
-    caption_words = [vocab.idx_to_word[idx] for idx in final_best_seq 
-                     if idx not in [vocab.SOS_token, vocab.EOS_token, vocab.PAD_token]]
-    return " ".join(caption_words)
-
+def decode_caption(seq, vocab):
+    """Chuyển đổi chuỗi index thành câu văn."""
+    words = []
+    for idx in seq:
+        idx = idx.item()
+        if idx == vocab.EOS_token:
+            break
+        if idx not in [vocab.SOS_token, vocab.PAD_token]:
+            words.append(vocab.idx_to_word.get(idx, "<UNK>"))
+    return " ".join(words)
 
 def main_generate():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Running Inference on: {device}")
     
-    # 1. Xây dựng Vocab (từ tập train)
+    # 1. Xây dựng Vocab (Bắt buộc dùng tập TRAIN để khớp index)
     vocab = Vocabulary()
     try:
+        print(f"Loading vocab from {CAPTION_TRAIN_JSON}...")
         with open(CAPTION_TRAIN_JSON, 'r', encoding='utf-8') as f:
-            raw_train_annotations = json.load(f)
-        all_train_captions = [item.get('translate') 
-                              for item in raw_train_annotations if item.get('translate')]
-        vocab.build_vocab(all_train_captions)
-        vocab_size = len(vocab)
+            raw = json.load(f)
+        clean_captions = [i.get('translate') for i in raw if i.get('translate') and isinstance(i.get('translate'), str) and len(i.get('translate').strip())>0]
+        vocab.build_vocab(clean_captions)
+        print(f"Vocab size: {len(vocab)}")
     except Exception as e:
         print(f"Lỗi khi xây dựng vocab: {e}"); return
         
     # 2. Tải Test Dataloader
-    test_dataset = COCODataset(IMAGE_DIR, FEATURE_DIR, CAPTION_TEST_JSON, vocab)
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
+    # Lưu ý: COCODataset cần load features .npz
+    if not os.path.exists(FEATURE_DIR):
+        print(f"CRITICAL ERROR: Không tìm thấy thư mục features tại {FEATURE_DIR}")
+        return
+
+    print("Initializing Test Dataloader...")
+    try:
+        test_dataset = COCODataset(TEST_IMAGE_DIR, FEATURE_DIR, CAPTION_TEST_JSON, vocab)
+        # Batch size = 1 để dễ quản lý ID ảnh
+        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=2)
+    except Exception as e:
+        print(f"Lỗi khởi tạo Dataloader: {e}")
+        return
     
     # 3. Tải Mô hình
-    model = GET(vocab_size, D_MODEL, N_HEAD, NUM_ENCODER_LAYERS, NUM_DECODER_LAYERS, controller_type=CONTROLLER_TYPE)
-    try:
-        model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=device))
-    except FileNotFoundError:
-        print(f"Lỗi: Không tìm thấy checkpoint tại {CHECKPOINT_PATH}. Vui lòng huấn luyện mô hình trước.")
-        return
-    model.to(device).eval()
-
-    results = {}
-    print("Bắt đầu sinh caption cho tập Test...")
+    print("Loading Model...")
+    model = GET(
+        vocab_size=len(vocab), 
+        d_model=D_MODEL, 
+        n_head=N_HEAD, 
+        num_encoder_layers=NUM_ENCODER_LAYERS, 
+        num_decoder_layers=NUM_DECODER_LAYERS, 
+        dropout=DROPOUT,
+        controller_type=CONTROLLER_TYPE
+    )
     
-    for img_ids, V_raw, g_raw, _, _, _ in tqdm(test_loader):
-        V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-        img_id = img_ids[0] # Vì batch_size=1
-        
-        caption = generate_caption_beam_search(model, V_raw, g_raw, vocab)
-        results[img_id] = caption
+    try:
+        print(f"Loading weights from: {CHECKPOINT_PATH}")
+        state_dict = torch.load(CHECKPOINT_PATH, map_location=device)
+        model.load_state_dict(state_dict)
+    except FileNotFoundError:
+        print(f"Lỗi: Không tìm thấy file checkpoint!")
+        return
+    except Exception as e:
+        print(f"Lỗi khi load weights: {e}")
+        return
+
+    model.to(device)
+    model.eval() # Quan trọng: Tắt Dropout
+
+    results = [] # List chứa kết quả (định dạng List[Dict] chuẩn COCO)
+    results_dict = {} # Dict để dễ đọc {img_id: caption}
+
+    print(f"Bắt đầu sinh caption với Beam Size = {BEAM_SIZE_INFERENCE}...")
+    
+    with torch.no_grad():
+        for i, (img_ids, V_raw, g_raw, _, _, _) in enumerate(tqdm(test_loader)):
+            V_raw, g_raw = V_raw.to(device), g_raw.to(device)
+            img_id = str(img_ids[0]) # Lấy ID ảnh
             
-    # Lưu kết quả {image_name: caption}
+            # Sử dụng hàm sample có sẵn của model (đã bao gồm Beam Search logic nếu model hỗ trợ)
+            # Hoặc model.sample trả về (seqs, log_probs)
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=BEAM_SIZE_INFERENCE)
+            
+            # Decode kết quả
+            # sampled_seqs shape: (1, max_len) nếu beam search trả về best candidate
+            caption = decode_caption(sampled_seqs[0], vocab)
+            
+            # Lưu kết quả
+            results_dict[img_id] = caption
+            results.append({"image_id": img_id, "caption": caption})
+            
+            # In thử 3 mẫu đầu tiên để kiểm tra
+            if i < 3:
+                print(f"\n[Img {img_id}]: {caption}")
+
+    # 4. Lưu kết quả ra file
+    print(f"Saving results to {OUTPUT_RESULT_FILE}...")
     with open(OUTPUT_RESULT_FILE, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=4)
         
-    print(f"\nHoàn thành sinh caption. Đã lưu kết quả tại: {OUTPUT_RESULT_FILE}")
-    return results
+    # Lưu thêm bản dictionary dễ đọc (Optional)
+    with open('caption_readable.json', 'w', encoding='utf-8') as f:
+        json.dump(results_dict, f, ensure_ascii=False, indent=4)
+        
+    print(f"Hoàn thành! Đã sinh caption cho {len(results)} ảnh.")
 
 if __name__ == '__main__':
+    # Fix lỗi phân mảnh bộ nhớ trên Kaggle
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     main_generate()
