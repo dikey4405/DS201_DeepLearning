@@ -24,7 +24,7 @@ EFFECTIVE_BATCH_SIZE = 32
 MICRO_BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = EFFECTIVE_BATCH_SIZE // MICRO_BATCH_SIZE
 
-# --- HÀM TRAIN SCST ---
+# --- HÀM TRAIN SCST (Đã sửa lỗi tham số) ---
 def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, device):
     model.train()
     total_loss = 0
@@ -33,28 +33,36 @@ def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, 
     for i, (_, V_raw, g_raw, _, _, gt_captions_list) in enumerate(data_loader):
         V_raw, g_raw = V_raw.to(device), g_raw.to(device)
         
-        # 1. Greedy Baseline (Beam=1)
+        # 1. Greedy Baseline (Dùng sample_k=1)
         model.eval()
         with torch.no_grad():
-            greedy_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
+            # SỬA LỖI: beam_size -> sample_k
+            greedy_seqs, _ = model.sample(V_raw, g_raw, vocab, sample_k=1)
             reward_baseline = cider_reward_metric.compute(greedy_seqs, gt_captions_list, beam_size=1)
         
-        # 2. Sample (Beam=5)
+        # 2. Sample (Dùng sample_k=5)
         model.train()
-        sample_beam_size = 5
-        sampled_seqs, log_probs = model.sample(V_raw, g_raw, vocab, beam_size=sample_beam_size)
-        reward_sample = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=sample_beam_size)
+        sample_k_val = 5
+        # SỬA LỖI: beam_size -> sample_k
+        sampled_seqs, log_probs = model.sample(V_raw, g_raw, vocab, sample_k=sample_k_val)
+        reward_sample = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=sample_k_val)
         
         # 3. Advantage
-        reward_baseline = reward_baseline.expand(-1, sample_beam_size)
+        # Mở rộng baseline để khớp kích thước: (B, 1) -> (B, 5) -> flatten
+        reward_baseline = reward_baseline.expand(-1, sample_k_val).contiguous().view(-1)
+        reward_sample = reward_sample.view(-1)
+        
         reward_diff = reward_sample - reward_baseline
         
+        # Normalization (Quan trọng cho SCST)
         if reward_diff.std() > 0:
              reward_diff = (reward_diff - reward_diff.mean()) / (reward_diff.std() + 1e-9)
         
         # 4. Loss
-        log_probs = log_probs.view(V_raw.size(0), sample_beam_size, -1)
-        seq_log_probs = log_probs.sum(dim=2)
+        # log_probs shape gốc: (B * sample_k, Max_Len)
+        # Tính tổng log_prob của cả câu
+        # mask những chỗ pad (nếu log_probs chưa xử lý mask, nhưng thường model trả về 0 ở pad rồi)
+        seq_log_probs = log_probs.sum(dim=1) # (B * sample_k)
         
         loss = -reward_diff * seq_log_probs
         loss = loss.mean()
@@ -72,7 +80,7 @@ def train_scst_epoch(model, data_loader, optimizer, cider_reward_metric, vocab, 
         
     return total_loss / len(data_loader)
 
-# --- EVALUATE ---
+# --- EVALUATE (Đã sửa lỗi tham số) ---
 def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
     model.eval()
     all_rewards = []
@@ -80,7 +88,8 @@ def evaluate_cider(model, data_loader, cider_reward_metric, vocab, device):
     with torch.no_grad():
         for _, V_raw, g_raw, _, _, gt_captions_list in data_loader:
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
-            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1) 
+            # SỬA LỖI: beam_size -> sample_k
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, sample_k=1) 
             rewards = cider_reward_metric.compute(sampled_seqs, gt_captions_list, beam_size=1)
             all_rewards.append(rewards.cpu())
     return torch.cat(all_rewards).mean().item()
@@ -122,9 +131,20 @@ def main():
     else:
         print("CRITICAL: XE Model not found!"); return
 
-    # 4. SCST Config
-    # LR cực thấp 5e-7
-    optimizer_scst = Adam(model.parameters(), lr=5e-7) 
+    # --- TỐI ƯU HÓA QUAN TRỌNG: ĐÓNG BĂNG ENCODER ---
+    print("Freezing Encoder for SCST stability...")
+    # Đóng băng Encoder
+    for p in model.encoder.parameters():
+        p.requires_grad = False
+    # Đóng băng các lớp Projection đầu vào
+    for p in model.v_proj.parameters():
+        p.requires_grad = False
+    for p in model.g_proj.parameters():
+        p.requires_grad = False
+        
+    # Chỉ đưa các tham số requires_grad=True (Decoder) vào Optimizer
+    optimizer_scst = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-7) 
+    
     cider_metric = CIDErReward(vocab, device)
     
     EPOCHS = 10
