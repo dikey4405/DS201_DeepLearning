@@ -7,6 +7,7 @@ import numpy as np
 from pyvi import ViTokenizer
 import json
 import os
+from collections import Counter
 
 class Vocabulary:
     def __init__(self):
