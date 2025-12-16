@@ -11,8 +11,21 @@ from collections import Counter
 
 class Vocabulary:
     def __init__(self):
-        self.word_to_idx = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2, "<UNK>": 3}
-        self.idx_to_word = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
+        # Token đặc biệt
+        self.word_to_idx = {
+            "<PAD>": 0,
+            "<SOS>": 1,
+            "<EOS>": 2,
+            "<UNK>": 3
+        }
+        # Khởi tạo ngược
+        self.idx_to_word = {
+            0: "<PAD>",
+            1: "<SOS>",
+            2: "<EOS>",
+            3: "<UNK>"
+        }
+
         self.PAD_token = 0
         self.SOS_token = 1
         self.EOS_token = 2
@@ -21,24 +34,69 @@ class Vocabulary:
     def __len__(self):
         return len(self.word_to_idx)
 
-    def build_vocab(self, all_captions):
-        word_freq = {}
-        print("Building vocabulary using ViTokenizer...")
+    def build_vocab(self, all_captions, threshold=1):
+        """
+        Xây dựng vocabulary từ danh sách caption tiếng Việt
+        """
+        print("Building vocabulary using ViTokenizer + Counter...")
+        word_freq = Counter()
+
+        # 1. Đếm tần suất
         for caption in all_captions:
-            if caption is None or not isinstance(caption, str):
-                continue             
-            # Tokenize tiếng Việt
-            tokens = ViTokenizer.tokenize(caption).split()           
-            for word in tokens:
-                word_freq[word] = word_freq.get(word, 0) + 1        
-        threshold = 1 # Ngưỡng tần suất tối thiểu
+            if not isinstance(caption, str):
+                continue
+            
+            # Thêm lower() và strip() để chuẩn hóa trước khi tokenize
+            tokens = ViTokenizer.tokenize(caption.lower().strip()).split()
+            word_freq.update(tokens)
+
+        # 2. Sắp xếp để đảm bảo index cố định (Deterministic)
+        sorted_words = sorted(word_freq.items(), key=lambda x: (-x[1], x[0]))
+
+        # 3. Gán index
         idx = 4
-        for word, count in word_freq.items():
+        for word, count in sorted_words:
             if count >= threshold:
+                # word_to_idx: Giữ nguyên gạch dưới (để khớp input lúc train)
                 self.word_to_idx[word] = idx
-                self.idx_to_word[idx] = word
+                
+                # idx_to_word: XÓA gạch dưới (để output lúc eval sạch đẹp, tăng điểm)
+                # Đây là dòng quan trọng nhất giúp bạn không phải sửa file evaluate.py
+                self.idx_to_word[idx] = word.replace("_", " ")
+                
                 idx += 1
+
         print(f"Total words in vocab (freq >= {threshold}): {len(self.word_to_idx)}")
+
+    def numericalize(self, tokens):
+        """
+        Chuyển danh sách token thành danh sách index
+        Input tokens: list các từ (có thể có gạch dưới do ViTokenizer sinh ra)
+        """
+        return [
+            self.word_to_idx.get(word, self.UNK_token)
+            for word in tokens
+        ]
+
+    def decode(self, indices, stop_at_eos=True):
+        """
+        Chuyển index -> câu chữ
+        """
+        words = []
+        for idx in indices:
+            # Xử lý an toàn nếu idx là Tensor
+            if isinstance(idx, torch.Tensor):
+                idx = idx.item()
+
+            if stop_at_eos and idx == self.EOS_token:
+                break
+            
+            # Bỏ qua các token đặc biệt khi in ra
+            if idx not in [self.PAD_token, self.SOS_token, self.UNK_token]:
+                word = self.idx_to_word.get(idx, "<UNK>")
+                words.append(word)
+                
+        return " ".join(words)
 
 class COCODataset(Dataset):
     def __init__(self, image_dir, features_dir, captions_file, vocabulary):
