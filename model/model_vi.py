@@ -84,16 +84,36 @@ class GlobalAdaptiveController(nn.Module):
         self.multihead_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
         if controller_type == 'GAC':
             self.sigmoid = nn.Sigmoid()
+            # Thêm linear projection nếu cần thiết để khớp chiều (tuỳ chọn)
+            
     def forward(self, a_tl, V_L, g_F):
+        # a_tl: (Batch, Seq_Len, D) - Query từ Decoder layer trước
+        # V_L: (Batch, Num_Regions, D) - Key/Value từ Encoder
+        # g_F: (Batch, D) - Global Feature
+        
         if self.controller_type == 'GAC':
-            hat_e_tl, _ = self.multihead_attn(a_tl, V_L, V_L)
-            a_t_last = a_tl[:, -1, :] 
-            alpha = self.sigmoid(torch.sum(a_t_last * g_F, dim=-1, keepdim=True)).unsqueeze(1) 
-            g_F_expanded = g_F.unsqueeze(1).expand_as(hat_e_tl)
-            e_tl = hat_e_tl + alpha * g_F_expanded 
+            # Cross-Attention thông thường
+            hat_e_tl, _ = self.multihead_attn(a_tl, V_L, V_L) # (B, L, D)
+            
+            # --- FIX: Tính alpha cho TOÀN BỘ chuỗi (Parallel Training) ---
+            # Tính tương đồng giữa a_tl (text features) và g_F (global img feature)
+            # g_F.unsqueeze(1): (B, 1, D)
+            # a_tl * g_F.unsqueeze(1): Element-wise mult -> (B, L, D)
+            # sum(dim=-1): Tổng theo chiều Feature -> (B, L)
+            energy = torch.sum(a_tl * g_F.unsqueeze(1), dim=-1, keepdim=True) # (B, L, 1)
+            alpha = self.sigmoid(energy) 
+            
+            # Fuse features
+            # g_F_expanded: (B, 1, D) -> broad cast tự động thành (B, L, D) khi cộng
+            e_tl = hat_e_tl + alpha * g_F.unsqueeze(1) 
+            
         elif self.controller_type == 'MAC':
-            V_g = torch.cat([V_L, g_F.unsqueeze(1)], dim=1) 
+            # Concatenate Global Feature vào Visual Features làm Key/Value
+            # g_F: (B, D) -> (B, 1, D)
+            g_F_expanded = g_F.unsqueeze(1)
+            V_g = torch.cat([V_L, g_F_expanded], dim=1) # (B, N+1, D)
             e_tl, _ = self.multihead_attn(a_tl, V_g, V_g) 
+            
         return e_tl
 
 class DecoderLayer(nn.Module):
@@ -137,6 +157,7 @@ class GET(nn.Module):
         self.encoder = GlobalEnhancedEncoder(num_encoder_layers, d_model, n_head, d_ff, dropout)
         self.decoder = GlobalAdaptiveDecoder(num_decoder_layers, d_model, n_head, d_ff, dropout, controller_type)
         self.classifier = nn.Linear(d_model, vocab_size)
+        self.d_model = d_model
 
     def generate_square_subsequent_mask(self, sz):
         mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
@@ -144,84 +165,90 @@ class GET(nn.Module):
         return mask
 
     def forward(self, V_raw, g_raw, captions):
-        # 1. Projection đầu vào ảnh
+        # ... (Phần này của bạn giữ nguyên, đã đúng logic) ...
         V0 = self.v_proj(V_raw)
         g0 = self.g_proj(g_raw)
-
-        # 2. Encoder
         V_L, g_F = self.encoder(V0, g0)
         
-        # 3. Decoder
-        caption_embed = self.word_embedding(captions) * math.sqrt(V_L.size(-1))
+        caption_embed = self.word_embedding(captions) * math.sqrt(self.d_model)
         caption_embed = self.pos_encoder(caption_embed)
+        
         tgt_len = captions.size(1)
         tgt_mask = self.generate_square_subsequent_mask(tgt_len).to(V_L.device)
         
         h_L = self.decoder(caption_embed, V_L, g_F, tgt_mask) 
-        
-        # 4. Classifier
         output = self.classifier(h_L)
         return output
 
-    def sample(self, V_raw, g_raw, vocab, max_len=50, beam_size=5):
+    def sample(self, V_raw, g_raw, vocab, max_len=20, sample_k=5):
         """
-        Sinh caption (sampling) cho SCST.
-        Sử dụng Greedy Search (beam_size=1) cho Batch (để đơn giản hóa).
+        Sinh caption phục vụ SCST (Self-Critical Sequence Training).
+        Thực hiện lấy mẫu ngẫu nhiên (Multinomial sampling) song song.
+        sample_k: Số lượng mẫu sinh ra cho mỗi ảnh (thường gọi là beam_size trong code cũ của bạn).
         """
         self.eval()
         device = V_raw.device
         batch_size = V_raw.size(0)
 
-        # 1. Chạy Encoder một lần
-        V0 = self.v_proj(V_raw)
-        g0 = self.g_proj(g_raw)
-        V_L, g_F = self.encoder(V0, g0) # (B, N, D), (B, D)
+        # 1. Chạy Encoder (CHỈ 1 LẦN)
+        with torch.no_grad():
+            V0 = self.v_proj(V_raw)
+            g0 = self.g_proj(g_raw)
+            V_L, g_F = self.encoder(V0, g0) # V_L: (B, N, D), g_F: (B, D)
 
-        # 2. Khởi tạo
-        sampled_seqs = torch.zeros(batch_size * beam_size, max_len, dtype=torch.long).to(device)
-        log_probs_sum = torch.zeros(batch_size * beam_size, max_len).to(device)
+        # 2. Expand Encoder Output để chạy song song
+        # Biến đổi thành (B * sample_k, ...)
+        V_L_exp = V_L.repeat_interleave(sample_k, dim=0) # (B*K, N, D)
+        g_F_exp = g_F.repeat_interleave(sample_k, dim=0) # (B*K, D)
+
+        # 3. Khởi tạo Input Sequence
+        # Bắt đầu bằng <SOS> cho tất cả các mẫu
+        input_seq = torch.full((batch_size * sample_k, 1), vocab.SOS_token, dtype=torch.long).to(device)
         
-        # Lặp qua từng beam (trong trường hợp này k=beam_size)
-        for k in range(beam_size):
-            # Khởi tạo token <SOS>
-            input_seq = torch.full((batch_size, 1), vocab.SOS_token, dtype=torch.long).to(device)
-            
-            for t in range(max_len):
-                # Tạo mask
-                tgt_len = input_seq.size(1)
-                tgt_mask = self.generate_square_subsequent_mask(tgt_len).to(device)
-                
-                # Chạy Decoder
-                caption_embed = self.word_embedding(input_seq) * math.sqrt(V_L.size(-1))
-                caption_embed = self.pos_encoder(caption_embed)
-                
-                h_L = self.decoder(caption_embed, V_L, g_F, tgt_mask)
-                
-                # Classifier cho từ cuối cùng
-                output = self.classifier(h_L[:, -1, :]) # (B, V)
-                log_probs = F.log_softmax(output, dim=-1) # (B, V)
-                
-                if t == 0 and k > 0:
-                    # Dùng Multinomial sampling cho các beam k>0
-                    sampled_word = torch.multinomial(log_probs.exp(), 1) # (B, 1)
-                else:
-                    # Dùng Greedy (Argmax) cho beam k=0
-                    _, sampled_word = torch.max(log_probs, dim=1)
-                    sampled_word = sampled_word.unsqueeze(1) # (B, 1)
-                
-                # Lấy log_prob của từ đã chọn
-                current_log_probs = log_probs.gather(1, sampled_word).squeeze(1) # (B,)
-                
-                # Lưu trữ
-                idx = k * batch_size
-                sampled_seqs[idx:idx+batch_size, t] = sampled_word.squeeze(1)
-                log_probs_sum[idx:idx+batch_size, t] = current_log_probs
+        # Lưu log probs để tính reward sau này
+        seq_log_probs = []
+        
+        # Trạng thái đã kết thúc của các câu (để tối ưu, có thể bỏ qua nếu không cần thiết)
+        finished = torch.zeros(batch_size * sample_k, dtype=torch.bool).to(device)
 
-                # Thêm từ đã chọn vào input cho bước tiếp theo
-                input_seq = torch.cat([input_seq, sampled_word], dim=1)
-                
-                # Dừng nếu tất cả trong batch đã sinh <EOS>
-                if (sampled_word.squeeze(1) == vocab.EOS_token).all():
-                    break
-                    
-        return sampled_seqs, log_probs_sum
+        for t in range(max_len):
+            tgt_mask = self.generate_square_subsequent_mask(input_seq.size(1)).to(device)
+            
+            # Decoder forward
+            # Lưu ý: Việc đưa cả input_seq dài vào mỗi bước khá chậm (O(N^2)). 
+            # Có thể tối ưu bằng cache (nhưng phức tạp hơn), cách này chấp nhận được cho độ dài ngắn.
+            caption_embed = self.word_embedding(input_seq) * math.sqrt(self.d_model)
+            caption_embed = self.pos_encoder(caption_embed)
+            
+            h_L = self.decoder(caption_embed, V_L_exp, g_F_exp, tgt_mask)
+            
+            # Chỉ lấy output của bước cuối cùng
+            output = self.classifier(h_L[:, -1, :]) # (B*K, Vocab_Size)
+            log_probs = F.log_softmax(output, dim=-1) # (B*K, Vocab_Size)
+            
+            # Lấy mẫu
+            if sample_k > 1:
+                # Multinomial Sampling (cho RL exploration)
+                prob_dist = torch.distributions.Categorical(logits=output)
+                next_word = prob_dist.sample() # (B*K,)
+                current_log_prob = prob_dist.log_prob(next_word)
+            else:
+                # Greedy Search (cho Baseline)
+                current_log_prob, next_word = torch.max(log_probs, dim=1) # (B*K,)
+
+            # Cập nhật log probs
+            seq_log_probs.append(current_log_prob)
+            
+            # Ghép từ mới vào chuỗi
+            input_seq = torch.cat([input_seq, next_word.unsqueeze(1)], dim=1)
+            
+            # Kiểm tra EOS (tuỳ chọn break sớm nếu toàn bộ batch đã xong)
+            # is_eos = (next_word == vocab.EOS_token)
+            # finished = finished | is_eos
+            # if finished.all(): break
+
+        # Stack log probs: (B*K, Max_Len)
+        seq_log_probs = torch.stack(seq_log_probs, dim=1)
+        
+        # Trả về sequences (bỏ token SOS đầu tiên) và log_probs tương ứng
+        return input_seq[:, 1:], seq_log_probs
