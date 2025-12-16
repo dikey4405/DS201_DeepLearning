@@ -10,12 +10,14 @@ import os
 
 class Vocabulary:
     def __init__(self):
-       self.word_to_idx = {
+        # Mapping từ TỪ (có gạch dưới) sang ID
+        self.word_to_idx = {
             "<PAD>": 0,
             "<SOS>": 1,
             "<EOS>": 2,
             "<UNK>": 3
         }
+        # Mapping từ ID sang TỪ (đã xóa gạch dưới để hiển thị/chấm điểm đẹp)
         self.idx_to_word = {
             0: "<PAD>",
             1: "<SOS>",
@@ -34,21 +36,30 @@ class Vocabulary:
         print("Building vocabulary using ViTokenizer...")
         word_freq = Counter()
 
+        # 1. Đếm tần suất
         for caption in all_captions:
             if caption is None or not isinstance(caption, str):
                 continue
             
+            # Tokenize: "con mèo" -> "con_mèo"
             tokens = ViTokenizer.tokenize(caption.lower().strip()).split()
             word_freq.update(tokens)
 
+        # 2. Sắp xếp deterministic (quan trọng để tái lập kết quả)
         sorted_words = sorted(word_freq.items(), key=lambda x: (-x[1], x[0]))
 
+        # 3. Xây dựng từ điển với enumerate
+        # Bắt đầu từ index 4 vì 0-3 đã dùng cho special tokens
         for idx, (word, count) in enumerate(sorted_words, start=4):
             if count >= threshold:
+                # Key để tra cứu: Giữ nguyên gạch dưới (để khớp ViTokenizer lúc train)
                 self.word_to_idx[word] = idx
                 
+                # Value để trả về: Xóa gạch dưới NGAY TẠI ĐÂY
+                # -> Các file khác gọi idx_to_word sẽ tự động có từ "sạch"
                 self.idx_to_word[idx] = word.replace("_", " ")
-
+        
+        print(f"Total words in vocab (freq >= {threshold}): {len(self.word_to_idx)}")
 
 class COCODataset(Dataset):
     def __init__(self, image_dir, features_dir, captions_file, vocabulary):
