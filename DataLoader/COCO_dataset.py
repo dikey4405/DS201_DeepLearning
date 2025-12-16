@@ -10,8 +10,18 @@ import os
 
 class Vocabulary:
     def __init__(self):
-        self.word_to_idx = {"<PAD>": 0, "<SOS>": 1, "<EOS>": 2, "<UNK>": 3}
-        self.idx_to_word = {0: "<PAD>", 1: "<SOS>", 2: "<EOS>", 3: "<UNK>"}
+        self.word_to_idx = {
+            "<PAD>": 0,
+            "<SOS>": 1,
+            "<EOS>": 2,
+            "<UNK>": 3
+        }
+        self.idx_to_word = {
+            0: "<PAD>",
+            1: "<SOS>",
+            2: "<EOS>",
+            3: "<UNK>"
+        }
         self.PAD_token = 0
         self.SOS_token = 1
         self.EOS_token = 2
@@ -21,26 +31,78 @@ class Vocabulary:
         return len(self.word_to_idx)
 
     def build_vocab(self, all_captions):
+        """
+        all_captions: iterable các caption GỐC (string),
+        giống nguồn dùng cho JSON trước khi tokenize trong Dataset
+        """
         word_freq = {}
         print("Building vocabulary using ViTokenizer...")
+
         for caption in all_captions:
             if caption is None or not isinstance(caption, str):
                 continue
-                
-            # Tokenize tiếng Việt
+
+            # === BẮT BUỘC khớp Dataset ===
+            caption = caption.lower().strip()
             tokens = ViTokenizer.tokenize(caption).split()
-            
+
             for word in tokens:
                 word_freq[word] = word_freq.get(word, 0) + 1
-        
-        threshold = 2 # Ngưỡng tần suất tối thiểu
-        idx = 4
-        for word, count in word_freq.items():
+
+        # ===== 2.2: vocab deterministic =====
+        sorted_words = sorted(
+            word_freq.items(),
+            key=lambda x: (-x[1], x[0])  # freq ↓, word ↑
+        )
+
+        threshold = 2
+        start_idx = len(self.word_to_idx)  # = 4
+
+        for i, (word, count) in enumerate(sorted_words):
             if count >= threshold:
+                idx = start_idx + i
                 self.word_to_idx[word] = idx
                 self.idx_to_word[idx] = word
-                idx += 1
+
+        # ===== 2.4: lưu tần suất =====
+        self.word_freq = word_freq
+
         print(f"Total words in vocab (freq >= {threshold}): {len(self.word_to_idx)}")
+
+    # ===== 2.5: encode / decode (KHÔNG ảnh hưởng Dataset) =====
+    def encode(self, caption, add_special_tokens=True):
+        """
+        Dùng khi inference / debug / evaluation ngoài Dataset
+        """
+        if caption is None or not isinstance(caption, str):
+            return []
+
+        caption = caption.lower().strip()
+        tokens = ViTokenizer.tokenize(caption).split()
+
+        token_ids = [
+            self.word_to_idx.get(word, self.UNK_token)
+            for word in tokens
+        ]
+
+        if add_special_tokens:
+            token_ids = [self.SOS_token] + token_ids + [self.EOS_token]
+
+        return token_ids
+
+    def decode(self, token_ids, remove_special_tokens=True):
+        words = []
+
+        for idx in token_ids:
+            word = self.idx_to_word.get(idx, "<UNK>")
+
+            if remove_special_tokens and word in {"<PAD>", "<SOS>", "<EOS>"}:
+                continue
+
+            words.append(word)
+
+        return " ".join(words)
+
 
 class COCODataset(Dataset):
     def __init__(self, image_dir, features_dir, captions_file, vocabulary):
