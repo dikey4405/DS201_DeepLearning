@@ -21,10 +21,10 @@ CAPTION_TRAIN_JSON = '/kaggle/input/data-dl/Captions/train.json' # Cần để b
 CAPTION_TEST_JSON = '/kaggle/input/data-dl/Captions/test.json'   # Tập cần sinh caption
 
 # File Checkpoint (Ưu tiên SCST, nếu chưa có thì dùng XE)
-CHECKPOINT_PATH = '/kaggle/input/image-captioning/pytorch/default/1/get_model_best_scst.pth'
+CHECKPOINT_PATH = '/kaggle/working/get_model_best_scst.pth'
 if not os.path.exists(CHECKPOINT_PATH):
     print("Không tìm thấy model SCST, chuyển sang dùng model XE...")
-    CHECKPOINT_PATH = '/kaggle/input/image-captioning/pytorch/default/1/get_model_best_xe (1).pth'
+    CHECKPOINT_PATH = '/kaggle/working/get_model_best_xe.pth'
 
 OUTPUT_RESULT_FILE = '/kaggle/working/caption_results.json'
 
