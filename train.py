@@ -79,7 +79,7 @@ def evaluate_cider(model, data_loader, vocab, device):
             V_raw, g_raw = V_raw.to(device), g_raw.to(device)
             
             # 1. Sinh caption (Greedy Search cho nhanh và ổn định ở Pha 1)
-            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=1)
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, sample_k=1)
             
             # 2. Gom kết quả
             for i in range(len(img_ids)):
