@@ -117,7 +117,7 @@ def main_generate():
             
             # Sử dụng hàm sample có sẵn của model (đã bao gồm Beam Search logic nếu model hỗ trợ)
             # Hoặc model.sample trả về (seqs, log_probs)
-            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, beam_size=BEAM_SIZE_INFERENCE)
+            sampled_seqs, _ = model.sample(V_raw, g_raw, vocab, sample_k=BEAM_SIZE_INFERENCE)
             
             # Decode kết quả
             # sampled_seqs shape: (1, max_len) nếu beam search trả về best candidate
